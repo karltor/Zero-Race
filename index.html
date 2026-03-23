@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zero Race</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="trackCanvas"></canvas>
+        <div id="sidebar">
+            <h1>ZERO RACE</h1>
+            <div id="race-info">
+                <div class="race-stat">
+                    <span class="label">Lap</span>
+                    <span id="race-lap" class="value">1 / 10</span>
+                </div>
+                <div class="race-stat">
+                    <span class="label">Leader</span>
+                    <span id="race-leader" class="value">--</span>
+                </div>
+            </div>
+            <h2>STANDINGS</h2>
+            <div id="standings"></div>
+            <h2>TEAM SCORES</h2>
+            <div id="team-scores"></div>
+            <h2>BEST LAPS</h2>
+            <div id="best-laps"></div>
+            <div id="controls">
+                <button id="btn-restart">NEW RACE</button>
+                <button id="btn-speed">SPEED: 1x</button>
+            </div>
+        </div>
+    </div>
+    <script src="track.js"></script>
+    <script src="car-svg.js"></script>
+    <script src="car.js"></script>
+    <script src="race.js"></script>
+    <script src="sidebar.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>

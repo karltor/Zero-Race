@@ -1,0 +1,200 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background: #1a1a2e;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+}
+
+#game-container {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+}
+
+#trackCanvas {
+    flex: 1;
+    background: #2d5a27;
+}
+
+#sidebar {
+    width: 280px;
+    min-width: 280px;
+    background: #16213e;
+    color: #e0e0e0;
+    padding: 16px;
+    overflow-y: auto;
+    border-left: 3px solid #0f3460;
+}
+
+#sidebar h1 {
+    text-align: center;
+    font-size: 28px;
+    letter-spacing: 6px;
+    color: #e94560;
+    margin-bottom: 12px;
+    text-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
+}
+
+#sidebar h2 {
+    font-size: 12px;
+    letter-spacing: 3px;
+    color: #0f3460;
+    border-bottom: 1px solid #0f3460;
+    padding-bottom: 4px;
+    margin: 14px 0 8px;
+    text-transform: uppercase;
+}
+
+#race-info {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+
+.race-stat {
+    flex: 1;
+    background: #0f3460;
+    border-radius: 6px;
+    padding: 8px;
+    text-align: center;
+}
+
+.race-stat .label {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #888;
+}
+
+.race-stat .value {
+    display: block;
+    font-size: 16px;
+    font-weight: bold;
+    margin-top: 2px;
+}
+
+#standings {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.standing-row {
+    display: flex;
+    align-items: center;
+    padding: 5px 8px;
+    background: rgba(15, 52, 96, 0.4);
+    border-radius: 4px;
+    font-size: 12px;
+    transition: background 0.3s;
+}
+
+.standing-row.leader {
+    background: rgba(233, 69, 96, 0.2);
+    border-left: 3px solid #e94560;
+}
+
+.standing-pos {
+    width: 20px;
+    font-weight: bold;
+    color: #888;
+}
+
+.standing-color {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 8px;
+    border: 1px solid rgba(255,255,255,0.3);
+}
+
+.standing-name {
+    flex: 1;
+    font-weight: 600;
+}
+
+.standing-info {
+    text-align: right;
+    font-size: 10px;
+    color: #aaa;
+}
+
+.standing-gap {
+    font-size: 10px;
+    color: #e94560;
+    width: 60px;
+    text-align: right;
+}
+
+#team-scores {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.team-row {
+    display: flex;
+    align-items: center;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.team-name {
+    flex: 1;
+    font-weight: 600;
+}
+
+.team-points {
+    font-weight: bold;
+}
+
+#best-laps {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+}
+
+.best-lap-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    gap: 6px;
+}
+
+.best-lap-time {
+    font-family: monospace;
+    color: #4ecca3;
+}
+
+#controls {
+    margin-top: 20px;
+    display: flex;
+    gap: 8px;
+}
+
+#controls button {
+    flex: 1;
+    padding: 10px;
+    background: #0f3460;
+    color: #e0e0e0;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    transition: background 0.2s;
+}
+
+#controls button:hover {
+    background: #e94560;
+}
