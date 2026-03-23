@@ -110,8 +110,7 @@
 
     window.addEventListener('resize', () => {
         resize();
-        // Regenerate track on resize
-        Track.generate(canvas.width, canvas.height);
+        // Redraw track cache at new size (keep same track shape)
         trackImage = document.createElement('canvas');
         trackImage.width = canvas.width;
         trackImage.height = canvas.height;

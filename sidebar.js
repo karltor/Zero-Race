@@ -75,6 +75,10 @@ const Sidebar = (() => {
     }
 
     function updateTeamScores() {
+        if (!Race.isStarted()) {
+            teamScoresEl.innerHTML = '<div class="best-lap-row" style="color:#666">Race not started</div>';
+            return;
+        }
         const scores = Race.getTeamScores();
         let html = '';
 
