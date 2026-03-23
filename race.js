@@ -14,7 +14,6 @@ const Race = (() => {
     let leader = null;
     let finishOrder = [];
 
-    // Car numbers per team
     const TEAM_NUMBERS = {
         blue:   [1, 2],
         yellow: [3, 4],
@@ -29,15 +28,19 @@ const Race = (() => {
         raceFinished = false;
         finishOrder = [];
 
+        // Place cars in a 2-wide grid formation behind the start line
         let gridPos = 0;
         for (const team of TEAMS) {
             for (let i = 0; i < CARS_PER_TEAM; i++) {
                 const num = TEAM_NUMBERS[team][i];
-                // Stagger lane positions: driver 1 inside, driver 2 outside
-                const lane = (i === 0 ? -8 : 8);
-                const car = new Car(team, num, lane);
-                // Grid positions: stagger starts
-                car.reset(-gridPos * 0.008);
+                const car = new Car(team, num);
+                // Stagger: row = gridPos/2, col = gridPos%2
+                const row = Math.floor(gridPos / 2);
+                const col = gridPos % 2;
+                const laneOffset = (col === 0 ? -12 : 12);
+                // Each row is spaced ~0.012 of track progress apart
+                const startProgress = 1 - row * 0.012;
+                car.placeOnTrack(startProgress, laneOffset);
                 gridPos++;
                 cars.push(car);
             }
@@ -58,22 +61,19 @@ const Race = (() => {
             return;
         }
 
+        // Convert to seconds for physics
+        const dtSec = adjustedDt / 1000;
+
         // Update all cars
         for (const car of cars) {
-            car.update(adjustedDt, cars, raceTime);
+            car.update(dtSec, cars, raceTime);
         }
 
         // Sort by total progress for positions
-        const sorted = [...cars].sort((a, b) => {
-            const aTotal = a.lap + a.progress;
-            const bTotal = b.lap + b.progress;
-            return bTotal - aTotal;
-        });
-
+        const sorted = [...cars].sort((a, b) => b.totalProgress - a.totalProgress);
         for (let i = 0; i < sorted.length; i++) {
             sorted[i].position = i + 1;
         }
-
         leader = sorted[0];
 
         // Check race finish
@@ -82,62 +82,34 @@ const Race = (() => {
                 finishOrder.push(car);
             }
         }
-
         if (finishOrder.length === cars.length) {
             raceFinished = true;
         }
     }
 
     function draw(ctx) {
-        // Draw cars sorted by progress so cars "behind" are drawn first
-        const sorted = [...cars].sort((a, b) => {
-            return (a.lap + a.progress) - (b.lap + b.progress);
-        });
-
+        // Draw cars sorted by progress so cars "behind" render first
+        const sorted = [...cars].sort((a, b) => a.totalProgress - b.totalProgress);
         for (const car of sorted) {
             car.draw(ctx);
         }
 
-        // Draw countdown if not started
+        // Countdown overlay
         if (!raceStarted) {
             const countdown = Math.ceil((3000 - raceTime) / 1000);
-            if (countdown > 0) {
-                drawCountdown(ctx, countdown);
-            } else {
-                drawGo(ctx);
-            }
+            ctx.save();
+            const cx = ctx.canvas.width / 2, cy = ctx.canvas.height / 2;
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 60, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = countdown > 0 ? '#fff' : '#4ecca3';
+            ctx.font = 'bold 64px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(countdown > 0 ? countdown : 'GO!', cx, cy);
+            ctx.restore();
         }
-    }
-
-    function drawCountdown(ctx, num) {
-        ctx.save();
-        const cx = ctx.canvas.width / 2;
-        const cy = ctx.canvas.height / 2;
-
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 60, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 72px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(num, cx, cy);
-        ctx.restore();
-    }
-
-    function drawGo(ctx) {
-        ctx.save();
-        const cx = ctx.canvas.width / 2;
-        const cy = ctx.canvas.height / 2;
-
-        ctx.fillStyle = '#4ecca3';
-        ctx.font = 'bold 64px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('GO!', cx, cy);
-        ctx.restore();
     }
 
     function getStandings() {
@@ -146,16 +118,12 @@ const Race = (() => {
 
     function getTeamScores() {
         const scores = {};
-        for (const team of TEAMS) {
-            scores[team] = 0;
-        }
-        // Points: 10, 8, 6, 5, 4, 3, 2, 1
+        for (const team of TEAMS) scores[team] = 0;
         const pointsTable = [10, 8, 6, 5, 4, 3, 2, 1];
         const standings = getStandings();
         for (let i = 0; i < standings.length; i++) {
             scores[standings[i].team] += pointsTable[i] || 0;
         }
-
         return TEAMS.map(t => ({
             team: t,
             points: scores[t],
@@ -170,10 +138,7 @@ const Race = (() => {
             .slice(0, 5);
     }
 
-    function setSpeed(mult) {
-        speedMultiplier = mult;
-    }
-
+    function setSpeed(mult) { speedMultiplier = mult; }
     function getCars() { return cars; }
     function getLeader() { return leader; }
     function getRaceTime() { return raceTime; }
