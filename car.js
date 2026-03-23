@@ -177,7 +177,7 @@ class Car {
     getCurvature() {
         const pts = Track.getPoints();
         const n = pts.length;
-        const idx = Math.floor((this.progress % 1) * n);
+        const idx = Math.floor(((this.progress % 1) + 1) % 1 * n);
         const lookAhead = 5;
 
         const p0 = pts[(idx - lookAhead + n) % n];
@@ -196,7 +196,7 @@ class Car {
         // Skilled drivers take tighter lines on curves
         const pts = Track.getPoints();
         const n = pts.length;
-        const idx = Math.floor((this.progress % 1) * n);
+        const idx = Math.floor(((this.progress % 1) + 1) % 1 * n);
         const lookAhead = 10;
 
         const p1 = pts[idx];

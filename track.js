@@ -279,7 +279,7 @@ const Track = (() => {
      */
     function getPositionAt(progress, laneOffset) {
         const n = points.length;
-        const exactIdx = ((progress % 1) + 1) % 1 * n;
+        const exactIdx = (((progress % 1) + 1) % 1) * n;
         const idx = Math.floor(exactIdx);
         const frac = exactIdx - idx;
 
