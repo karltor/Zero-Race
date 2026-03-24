@@ -19,26 +19,37 @@ const Track = (() => {
         const ctrl = [];
         for (let i = 0; i < numCtrl; i++) {
             const angle = (i / numCtrl) * Math.PI * 2;
-            const rVar = 0.6 + Math.random() * 0.4;
+            // Allow radius as low as 28% to enable concave C/horseshoe shapes
+            const rVar = 0.28 + Math.random() * 0.72;
             ctrl.push({
                 x: cx + Math.cos(angle) * rx * rVar,
                 y: cy + Math.sin(angle) * ry * rVar
             });
         }
 
-        // Ensure minimum distance between control points
-        for (let iter = 0; iter < 3; iter++) {
+        // Enforce minimum distance between ALL pairs of control points (not just adjacent)
+        // to prevent the spline from self-intersecting. More iterations + global check.
+        for (let iter = 0; iter < 8; iter++) {
             for (let i = 0; i < ctrl.length; i++) {
-                const next = ctrl[(i + 1) % ctrl.length];
-                const dx = next.x - ctrl[i].x, dy = next.y - ctrl[i].y;
-                const d = Math.sqrt(dx * dx + dy * dy);
-                if (d < 80) {
-                    const mx = (ctrl[i].x + next.x) / 2;
-                    const my = (ctrl[i].y + next.y) / 2;
-                    ctrl[i].x += (ctrl[i].x - mx) * 0.3;
-                    ctrl[i].y += (ctrl[i].y - my) * 0.3;
-                    next.x += (next.x - mx) * 0.3;
-                    next.y += (next.y - my) * 0.3;
+                for (let j = i + 1; j < ctrl.length; j++) {
+                    const isAdj = j - i === 1 || (i === 0 && j === ctrl.length - 1);
+                    const minD = isAdj ? 115 : 95;
+                    const dx = ctrl[j].x - ctrl[i].x, dy = ctrl[j].y - ctrl[i].y;
+                    const d = Math.sqrt(dx * dx + dy * dy);
+                    if (d < minD && d > 0.01) {
+                        const mx = (ctrl[i].x + ctrl[j].x) / 2;
+                        const my = (ctrl[i].y + ctrl[j].y) / 2;
+                        const push = 0.4;
+                        ctrl[i].x += (ctrl[i].x - mx) * push;
+                        ctrl[i].y += (ctrl[i].y - my) * push;
+                        ctrl[j].x += (ctrl[j].x - mx) * push;
+                        ctrl[j].y += (ctrl[j].y - my) * push;
+                        // Keep points within canvas bounds
+                        ctrl[i].x = Math.max(margin + 60, Math.min(w - margin - 60, ctrl[i].x));
+                        ctrl[i].y = Math.max(margin + 60, Math.min(h - margin - 60, ctrl[i].y));
+                        ctrl[j].x = Math.max(margin + 60, Math.min(w - margin - 60, ctrl[j].x));
+                        ctrl[j].y = Math.max(margin + 60, Math.min(h - margin - 60, ctrl[j].y));
+                    }
                 }
             }
         }

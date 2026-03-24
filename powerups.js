@@ -66,7 +66,9 @@ const PowerUps = (() => {
                 y: pos.y,
                 angle: angle,
                 active: true,
-                cooldownTimer: 0
+                cooldownTimer: 0,
+                trackProgress: progress,   // fractional position around track (0-1)
+                leaderPassed: false        // becomes true once P1 has driven past this point
             });
         }
 
@@ -83,23 +85,42 @@ const PowerUps = (() => {
      * @param {number} dt   Delta time in seconds.
      * @param {Car[]}  cars Array of Car objects.
      */
-    function update(dt, cars) {
-        _updateBoostPads(dt, cars);
+    function update(dt, cars, leader) {
+        _updateBoostPads(dt, cars, leader);
         _updateOilSlicks(dt, cars);
         _spawnOilSlick(dt, cars);
         _applyCatchup(cars);
     }
 
-    /** Tick pad cooldowns and test car overlaps. */
-    function _updateBoostPads(dt, cars) {
+    /** Tick pad cooldowns and test car overlaps.
+     *  Pads only light up once the race leader has driven past that track position.
+     *  Boost duration scales with the gap between the triggered car and the leader.
+     */
+    function _updateBoostPads(dt, cars, leader) {
+        // Unlock pads the leader has passed
+        if (leader) {
+            const leaderFrac = leader.totalProgress % 1; // fractional position this lap
+            const leaderLaps = Math.floor(leader.totalProgress);
+            for (const pad of boostPads) {
+                if (!pad.leaderPassed) {
+                    // Unlocked once the leader is past this track fraction on any lap
+                    if (leaderLaps >= 1 || leaderFrac > pad.trackProgress) {
+                        pad.leaderPassed = true;
+                    }
+                }
+            }
+        }
+
         for (const pad of boostPads) {
+            // Invisible and inert until the leader has rolled past
+            if (!pad.leaderPassed) continue;
+
             if (!pad.active) {
                 pad.cooldownTimer -= dt;
                 if (pad.cooldownTimer <= 0) {
                     pad.active = true;
                     pad.cooldownTimer = 0;
                 }
-                // No collision while cooling down.
                 continue;
             }
 
@@ -108,12 +129,19 @@ const PowerUps = (() => {
                 const dx = car.x - pad.x;
                 const dy = car.y - pad.y;
                 if (dx * dx + dy * dy <= BOOST_PAD_RADIUS * BOOST_PAD_RADIUS) {
-                    // Backmarkers get a longer boost — position 1 gets 3.0 s, P8 gets ~5.1 s.
-                    car.boostTimer = 3.0 + (car.position - 1) * 0.3;
+                    // Gap-based boost: the further a car is behind the leader, the bigger
+                    // the boost.  Range: ~2 s (right behind P1) → up to 7 s (half-lap back).
+                    let gapBoost = 2.5;
+                    if (leader && car !== leader) {
+                        const gap = Math.max(0, leader.totalProgress - car.totalProgress);
+                        gapBoost = Math.min(7.0, 2.0 + gap * 5.5);
+                    }
+                    car.boostTimer = Math.max(car.boostTimer, gapBoost);
+                    Effects.addSparks(car.x, car.y, 8);
 
                     pad.active = false;
                     pad.cooldownTimer = PAD_COOLDOWN;
-                    break; // One car per frame is enough; pad is now inactive.
+                    break;
                 }
             }
         }
@@ -249,7 +277,7 @@ const PowerUps = (() => {
         const now = Date.now();
 
         for (const pad of boostPads) {
-            if (!pad.active) continue;
+            if (!pad.leaderPassed || !pad.active) continue;
 
             // Pulse: oscillate glow intensity and slight scale using a sine wave.
             const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + pad.x * 0.01);
