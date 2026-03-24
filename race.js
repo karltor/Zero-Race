@@ -25,15 +25,15 @@ const Race = (() => {
         raceFinished = false;
         finishOrder = [];
 
+        // F1-style staggered grid: one car per row, alternating left/right
         let gridPos = 0;
         for (const team of TEAMS) {
             for (let i = 0; i < CARS_PER_TEAM; i++) {
                 const num = TEAM_NUMBERS[team][i];
                 const car = new Car(team, num);
-                const row = Math.floor(gridPos / 2);
-                const col = gridPos % 2;
-                const laneOffset = (col === 0 ? -18 : 18);
-                const startProgress = 1 - row * 0.04;
+                const side = gridPos % 2 === 0 ? -1 : 1;
+                const laneOffset = side * 16;
+                const startProgress = 1 - gridPos * 0.012;
                 car.placeOnTrack(startProgress, laneOffset);
                 gridPos++;
                 cars.push(car);
@@ -57,9 +57,10 @@ const Race = (() => {
         // Update effects
         Effects.update(dtSec);
 
-        // Update all cars
+        // Update all cars (pass time since green light for grace period)
+        const timeSinceStart = raceTime - 3000;
         for (const car of cars) {
-            car.update(dtSec, cars, raceTime);
+            car.update(dtSec, cars, raceTime, timeSinceStart);
         }
 
         // Positions
