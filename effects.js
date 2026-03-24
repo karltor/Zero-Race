@@ -35,13 +35,14 @@ const Effects = (() => {
         for (let i = 0; i < count; i++) {
             if (particles.length >= MAX_PARTICLES) break;
             const spread = (Math.random() - 0.5) * 1.5;
+            const smokeLife = 0.4 + Math.random() * 0.3;
             particles.push({
                 x: x - Math.cos(angle) * 12 + spread * 5,
                 y: y - Math.sin(angle) * 12 + spread * 5,
                 vx: -Math.cos(angle) * (10 + Math.random() * 15) + (Math.random()-0.5) * 20,
                 vy: -Math.sin(angle) * (10 + Math.random() * 15) + (Math.random()-0.5) * 20,
-                life: 0.4 + Math.random() * 0.3,
-                maxLife: 0.4 + Math.random() * 0.3,
+                life: smokeLife,
+                maxLife: smokeLife,
                 type: 'smoke',
                 color: '#ccc',
                 size: 3 + Math.random() * 4
@@ -150,7 +151,7 @@ const Effects = (() => {
                 ctx.fillStyle = p.color;
                 ctx.globalAlpha = alpha * 0.3;
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, p.size * expand, 0, Math.PI * 2);
+                ctx.arc(p.x, p.y, Math.max(0.1, p.size * expand), 0, Math.PI * 2);
                 ctx.fill();
             } else if (p.type === 'wind') {
                 ctx.strokeStyle = p.color;
