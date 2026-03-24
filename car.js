@@ -106,13 +106,13 @@ class Car {
         }
     }
 
-    update(dt, allCars, raceTime, timeSinceStart) {
+    update(dt, allCars, raceTime, timeSinceStart, noCollisions) {
         if (this.lap === 0 && this.lapStartTime === 0) this.lapStartTime = raceTime;
 
         const ai = this.runAI(allCars, dt, timeSinceStart);
         this.applyPhysics(ai.throttle, ai.brake, ai.steer, dt);
 
-        if (timeSinceStart > 4000) this.resolveCollisions(allCars);
+        if (!noCollisions && timeSinceStart > 4000) this.resolveCollisions(allCars);
 
         this.detectStuck(dt);
         this.updateProgress(raceTime);
@@ -572,6 +572,27 @@ class Car {
         ctx.save();
         ctx.translate(this.x, this.y);
         ctx.rotate(this.angle);
+
+        // Rainbow spinning outline for P1 (race leader)
+        if (this.position === 1) {
+            const now = Date.now();
+            const segments = 14;
+            ctx.save();
+            ctx.lineWidth = 3;
+            for (let i = 0; i < segments; i++) {
+                const hue = (now * 0.12 + (i / segments) * 360) % 360;
+                const sa = (i / segments) * Math.PI * 2 + now * 0.0025;
+                const ea = ((i + 1) / segments) * Math.PI * 2 + now * 0.0025;
+                ctx.strokeStyle = `hsl(${hue}, 100%, 62%)`;
+                ctx.shadowColor  = `hsl(${hue}, 100%, 70%)`;
+                ctx.shadowBlur   = 10;
+                ctx.globalAlpha  = 0.85;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 30, 17, 0, sa, ea);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
 
         // Boost glow
         if (this.boostTimer > 0) {
