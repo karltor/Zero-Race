@@ -12,7 +12,7 @@
 
     function resize() {
         const container = canvas.parentElement;
-        canvas.width = container.clientWidth - 280;
+        canvas.width = container.clientWidth - 320;
         canvas.height = container.clientHeight;
     }
 

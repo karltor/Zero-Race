@@ -4,14 +4,14 @@
  */
 const Track = (() => {
     let points = [];
-    let trackWidth = 120;
+    let trackWidth = 150;
     let finishIndex = 0;
     let totalLength = 0;
 
     function generate(w, h) {
         const cx = w / 2;
         const cy = h / 2;
-        const margin = 80;
+        const margin = 35;
         const rx = (w - margin * 2) / 2;
         const ry = (h - margin * 2) / 2;
 

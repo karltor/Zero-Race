@@ -24,6 +24,7 @@ const Race = (() => {
         raceStarted = false;
         raceFinished = false;
         finishOrder = [];
+        PowerUps.init();
 
         // F1-style staggered grid: one car per row, alternating left/right
         let gridPos = 0;
@@ -66,6 +67,9 @@ const Race = (() => {
         // Positions
         const sorted = [...cars].sort((a, b) => b.totalProgress - a.totalProgress);
         for (let i = 0; i < sorted.length; i++) sorted[i].position = i + 1;
+
+        // Power-ups (run after positions are set so catch-up factor is accurate)
+        PowerUps.update(dtSec, cars);
         leader = sorted[0];
 
         // Finish check
@@ -78,8 +82,11 @@ const Race = (() => {
     }
 
     function draw(ctx) {
-        // Draw effects layer (skid marks, particles) under cars
+        // Draw effects layer (skid marks, particles) under everything
         Effects.draw(ctx);
+
+        // Draw power-ups (oil slicks below cars, boost pads on top)
+        PowerUps.draw(ctx);
 
         // Cars sorted by progress for painter's algorithm
         const sorted = [...cars].sort((a, b) => a.totalProgress - b.totalProgress);
