@@ -15,49 +15,58 @@ const Track = (() => {
         const rx = (w - margin * 2) / 2;
         const ry = (h - margin * 2) / 2;
 
-        const numCtrl = 8 + Math.floor(Math.random() * 5);
-        const ctrl = [];
-        for (let i = 0; i < numCtrl; i++) {
-            const angle = (i / numCtrl) * Math.PI * 2;
-            // Allow radius as low as 28% to enable concave C/horseshoe shapes
-            const rVar = 0.28 + Math.random() * 0.72;
-            ctrl.push({
-                x: cx + Math.cos(angle) * rx * rVar,
-                y: cy + Math.sin(angle) * ry * rVar
-            });
-        }
+        // Try up to 6 times; regenerate if the track would produce visible edge crossings.
+        for (let attempt = 0; attempt < 6; attempt++) {
+            const numCtrl = 8 + Math.floor(Math.random() * 5);
+            const ctrl = [];
+            for (let i = 0; i < numCtrl; i++) {
+                const angle = (i / numCtrl) * Math.PI * 2;
+                // 0.38–1.0 allows moderate concavity (C/horseshoe shapes) without being
+                // so extreme that the spline doubles back on itself.
+                const rVar = 0.38 + Math.random() * 0.62;
+                ctrl.push({
+                    x: cx + Math.cos(angle) * rx * rVar,
+                    y: cy + Math.sin(angle) * ry * rVar
+                });
+            }
 
-        // Enforce minimum distance between ALL pairs of control points (not just adjacent)
-        // to prevent the spline from self-intersecting. More iterations + global check.
-        for (let iter = 0; iter < 8; iter++) {
-            for (let i = 0; i < ctrl.length; i++) {
-                for (let j = i + 1; j < ctrl.length; j++) {
-                    const isAdj = j - i === 1 || (i === 0 && j === ctrl.length - 1);
-                    const minD = isAdj ? 115 : 95;
-                    const dx = ctrl[j].x - ctrl[i].x, dy = ctrl[j].y - ctrl[i].y;
+            // Only enforce ADJACENT pairs — pushing non-adjacent pairs apart causes the
+            // spline to make violent hairpins to reach the next control point.
+            for (let iter = 0; iter < 5; iter++) {
+                for (let i = 0; i < ctrl.length; i++) {
+                    const next = ctrl[(i + 1) % ctrl.length];
+                    const dx = next.x - ctrl[i].x, dy = next.y - ctrl[i].y;
                     const d = Math.sqrt(dx * dx + dy * dy);
-                    if (d < minD && d > 0.01) {
-                        const mx = (ctrl[i].x + ctrl[j].x) / 2;
-                        const my = (ctrl[i].y + ctrl[j].y) / 2;
-                        const push = 0.4;
-                        ctrl[i].x += (ctrl[i].x - mx) * push;
-                        ctrl[i].y += (ctrl[i].y - my) * push;
-                        ctrl[j].x += (ctrl[j].x - mx) * push;
-                        ctrl[j].y += (ctrl[j].y - my) * push;
-                        // Keep points within canvas bounds
-                        ctrl[i].x = Math.max(margin + 60, Math.min(w - margin - 60, ctrl[i].x));
-                        ctrl[i].y = Math.max(margin + 60, Math.min(h - margin - 60, ctrl[i].y));
-                        ctrl[j].x = Math.max(margin + 60, Math.min(w - margin - 60, ctrl[j].x));
-                        ctrl[j].y = Math.max(margin + 60, Math.min(h - margin - 60, ctrl[j].y));
+                    if (d < 100) {
+                        const mx = (ctrl[i].x + next.x) / 2;
+                        const my = (ctrl[i].y + next.y) / 2;
+                        ctrl[i].x += (ctrl[i].x - mx) * 0.35;
+                        ctrl[i].y += (ctrl[i].y - my) * 0.35;
+                        next.x += (next.x - mx) * 0.35;
+                        next.y += (next.y - my) * 0.35;
                     }
                 }
             }
+
+            points = catmullRomChain(ctrl, 50);
+            computeLength();
+
+            // Validate: reject tracks where any corner is tighter than the track can
+            // handle — that's what creates the visual X crossings in the edge lines.
+            // curvatureAt > 0.17 means the inner edge would collapse/cross itself.
+            if (_isTrackValid()) break;
         }
 
-        points = catmullRomChain(ctrl, 50);
         finishIndex = 0;
-        computeLength();
         return points;
+    }
+
+    function _isTrackValid() {
+        const n = points.length;
+        for (let i = 0; i < n; i++) {
+            if (curvatureAt(i) > 0.17) return false;
+        }
+        return true;
     }
 
     function catmullRomChain(ctrl, segPts) {
