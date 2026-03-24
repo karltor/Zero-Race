@@ -33,7 +33,7 @@ const Race = (() => {
                 const row = Math.floor(gridPos / 2);
                 const col = gridPos % 2;
                 const laneOffset = (col === 0 ? -18 : 18);
-                const startProgress = 1 - row * 0.015;
+                const startProgress = 1 - row * 0.04;
                 car.placeOnTrack(startProgress, laneOffset);
                 gridPos++;
                 cars.push(car);
