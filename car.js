@@ -1,6 +1,7 @@
 /**
  * Car with 2D physics and tactical AI.
- * Each car has unique stats that meaningfully affect driving behaviour.
+ * Pure-pursuit steering eliminates "checkpoint" corner behavior.
+ * Per-car racing line preferences create visible driving variety.
  */
 
 const CAR_PROFILES = {
@@ -42,14 +43,24 @@ class Car {
         this.lapTimes = [];
 
         // AI state
-        this.targetLane = 0;       // -1..1 normalised lane target
-        this.overtakeTimer = 0;    // counts down while executing a pass
-        this.overtakeSide = 0;     // -1 left, +1 right
+        this.targetLane = 0;
+        this.overtakeTimer = 0;
+        this.overtakeSide = 0;
         this.defendTimer = 0;
         this.blocked = false;
         this.braking = false;
         this.slipstreaming = false;
         this.offTrack = false;
+
+        // Per-car racing line personality (set once, shapes style throughout the race)
+        // apex: how tight they cut the inside; lineVariance: general lane bias
+        this.apexCut = 0.35 + Math.random() * 0.45 * this.stats.cornering;
+        this.lineVariance = (Math.random() - 0.5) * 0.22;
+
+        // Power-up state (written by PowerUps module)
+        this.boostTimer = 0;
+        this.oilTimer = 0;
+        this.catchupFactor = 0;
 
         this.stuckTimer = 0;
         this.lastTrackIdx = 0;
@@ -68,6 +79,9 @@ class Car {
         this.targetLane = laneOffset / (Track.getWidth() / 2);
         this.overtakeTimer = 0;
         this.defendTimer = 0;
+        this.boostTimer = 0;
+        this.oilTimer = 0;
+        this.catchupFactor = 0;
         this.stuckTimer = 0;
 
         const pos = Track.getPositionAt(this.progress, laneOffset);
@@ -76,6 +90,20 @@ class Car {
         this.angle = pos.angle;
         this.trackIndex = Math.floor(this.progress * Track.getPointCount());
         this.lastTrackIdx = this.trackIndex;
+    }
+
+    // Called by PowerUps module
+    activateBoost(duration) {
+        this.boostTimer = Math.max(this.boostTimer, duration);
+        Effects.addSparks(this.x, this.y, 6);
+    }
+
+    activateOilSlick() {
+        if (this.oilTimer <= 0) {
+            this.oilTimer = 1.8;
+            this.speed *= 0.55;
+            Effects.addSparks(this.x, this.y, 10);
+        }
     }
 
     update(dt, allCars, raceTime, timeSinceStart) {
@@ -95,7 +123,6 @@ class Car {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Cross-product sign of consecutive track segments. +1 = right turn, -1 = left turn. */
     getCurveDirection(idx) {
         const n = Track.getPointCount();
         const pts = Track.getPoints();
@@ -107,10 +134,6 @@ class Car {
         return cross >= 0 ? 1 : -1;
     }
 
-    /**
-     * Sample the maximum curvature over a zone from startPts to endPts track
-     * indices ahead of the current position.
-     */
     maxCurvatureAhead(startPts, endPts) {
         const n = Track.getPointCount();
         let max = 0;
@@ -132,42 +155,49 @@ class Car {
         const tw = Track.getWidth();
         const maxSpeed = 350 * this.stats.topSpeed;
         const isGrace = timeSinceStart < 4000;
+        const isLap1  = this.lap === 0;
 
         // --- LOCATE ON TRACK ---
         const closest = Track.closestPoint(this.x, this.y);
         this.trackIndex = closest.index;
-        const trackAngle = Track.angleAt(this.trackIndex);
         const norm = Track.normalAt(this.trackIndex);
-        const cp = Track.getPoints()[this.trackIndex];
+        const cp   = Track.getPoints()[this.trackIndex];
         const lateralOffset = (this.x - cp.x) * norm.x + (this.y - cp.y) * norm.y;
         this.offTrack = Math.abs(lateralOffset) > tw * 0.45;
 
         // --- PHYSICS-BASED LOOK-AHEAD ---
-        // Braking distance = v²/(2a). Better brakers have higher decel → shorter
-        // stopping distance → they can afford to look less far ahead (brake later).
         const brakingDecel = 450 * this.stats.braking;
         const brakingPx = (this.speed * this.speed) / (2 * brakingDecel);
-        const pxPerPt = Track.getTrackLength() / n;
-        // Span from ~15% to 100% of braking distance (not 0 so we don't react to current curv)
-        const brakePts = Math.max(10, Math.min(85, Math.round(brakingPx / pxPerPt)));
-        const nearPts  = Math.max(4,  Math.round(brakePts * 0.2));
+        const pxPerPt   = Track.getTrackLength() / n;
+        const brakePts  = Math.max(10, Math.min(85, Math.round(brakingPx / pxPerPt)));
+        const nearPts   = Math.max(4,  Math.round(brakePts * 0.2));
 
-        // Max curvature in braking zone
-        const maxCurv  = this.maxCurvatureAhead(nearPts, brakePts);
-        // Curvature right under the car (for racing line)
-        const curNear  = this.maxCurvatureAhead(2, nearPts);
+        const maxCurv = this.maxCurvatureAhead(nearPts, brakePts);
+        const curNear = this.maxCurvatureAhead(2, nearPts);
         const isOnStraight = maxCurv < 0.018;
 
         // --- CORNER SPEED ---
-        // Higher cornering stat lets car carry more speed through curves.
         const cornerSpeed = maxSpeed * Math.max(0.45, 1 - maxCurv * 2.6 / this.stats.cornering);
 
-        // --- RACING LINE ---
-        // In corners, move toward inside of turn. Higher cornering = tighter line.
-        let racingLine = 0;
-        if (curNear > 0.022) {
+        // --- RACING LINE (outside → apex → outside with per-car personality) ---
+        // Detect corner phase: approaching (curv increasing) vs apex vs exiting
+        const curvAhead = this.maxCurvatureAhead(nearPts, Math.round(brakePts * 0.6));
+        const approaching = curvAhead > curNear * 1.3 && curvAhead > 0.02;
+        const exiting     = curNear > curvAhead * 1.3 && curNear > 0.025;
+
+        let racingLine = this.lineVariance;
+        if (curNear > 0.018 || maxCurv > 0.018) {
             const dir = this.getCurveDirection(this.trackIndex);
-            racingLine = -dir * 0.55 * Math.min(1.25, this.stats.cornering);
+            if (approaching) {
+                // Wide entry — go to outside before turn-in
+                racingLine = dir * 0.38 + this.lineVariance;
+            } else if (exiting) {
+                // Track out — drift to outside
+                racingLine = dir * 0.28 + this.lineVariance;
+            } else {
+                // Apex: cut inside aggressively (varies per car)
+                racingLine = -dir * this.apexCut + this.lineVariance;
+            }
         }
 
         // --- TIMER UPKEEP ---
@@ -176,22 +206,37 @@ class Car {
         const isOvertaking = this.overtakeTimer > 0;
         const isDefending  = this.defendTimer   > 0;
 
-        // --- STEERING ---
-        // When executing a manoeuvre, use the committed lane; otherwise blend racing line.
+        // --- COMPUTE TARGET LATERAL POSITION ---
         const laneTarget = (isOvertaking || isDefending)
             ? this.targetLane
-            : racingLine * 0.55 + this.targetLane * 0.45;
+            : racingLine * 0.6 + this.targetLane * 0.4;
         const desiredOffset = laneTarget * (tw * 0.3);
-        const offsetErr = desiredOffset - lateralOffset;
 
-        let angleErr = trackAngle - this.angle;
+        // --- PURE PURSUIT STEERING ---
+        // Aim at a look-ahead point on the desired lane — eliminates "checkpoint" corner behavior.
+        const lookPts = Math.max(20, Math.round(this.speed * 0.13));
+        const lookIdx = (this.trackIndex + lookPts) % n;
+        const lookPt  = Track.getPositionAt(lookIdx / n, desiredOffset);
+        const dxL = lookPt.x - this.x;
+        const dyL = lookPt.y - this.y;
+        let targetAngle = Math.atan2(dyL, dxL);
+
+        let angleErr = targetAngle - this.angle;
         while (angleErr >  Math.PI) angleErr -= Math.PI * 2;
         while (angleErr < -Math.PI) angleErr += Math.PI * 2;
 
-        let steer = angleErr * 2.5 + (offsetErr / tw) * 3.0;
-        if (Math.abs(lateralOffset) > tw * 0.38) {
-            steer = angleErr * 4.0 + (offsetErr / tw) * 5.0;
+        let steer = angleErr * 2.2;
+
+        // Hard correction if near track edge
+        if (Math.abs(lateralOffset) > tw * 0.4) {
+            steer += -(lateralOffset / tw) * 3.0;
         }
+
+        // Oil slick: reduce steering authority
+        if (this.oilTimer > 0) {
+            steer *= 0.4;
+        }
+
         steer = Math.max(-1, Math.min(1, steer));
 
         // --- BASE THROTTLE / BRAKE ---
@@ -200,16 +245,13 @@ class Car {
 
         const speedExcess = this.speed - cornerSpeed;
         if (speedExcess > 8) {
-            // Need to scrub speed: brake proportionally to excess
-            const brakePower = Math.min(0.92, speedExcess / (maxSpeed * 0.28) * this.stats.braking);
-            brake = brakePower;
+            const brakePow = Math.min(0.92, speedExcess / (maxSpeed * 0.28) * this.stats.braking);
+            brake    = brakePow;
             throttle = 0;
             this.braking = true;
         } else if (speedExcess > -8) {
-            // Right at target speed: coast with a touch of throttle
             throttle = 0.12;
         } else {
-            // Under target: accelerate
             throttle = isOnStraight ? 1.0 : Math.min(1.0, 0.5 + (-speedExcess) / (maxSpeed * 0.3));
         }
 
@@ -218,15 +260,20 @@ class Car {
             brake    = Math.max(brake, 0.2);
         }
 
+        // Oil slick: cut throttle
+        if (this.oilTimer > 0) {
+            throttle = Math.min(throttle, 0.25);
+        }
+
         // --- SCAN FOR NEARBY CARS ---
         this.blocked = false;
         this.slipstreaming = false;
 
         const cosA = Math.cos(this.angle), sinA = Math.sin(this.angle);
 
-        let carAhead    = null;   // nearest car directly in our path
-        let carBehind   = null;   // nearest car chasing us
-        let carAlongside = null;  // car we are currently side-by-side with
+        let carAhead    = null;
+        let carBehind   = null;
+        let carAlongside = null;
 
         for (const other of allCars) {
             if (other === this) continue;
@@ -234,39 +281,33 @@ class Car {
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist > 200) continue;
 
-            const dotFwd  =  dx * cosA + dy * sinA;    // + = ahead of us
-            const dotSide = -dx * sinA + dy * cosA;    // + = left of us
+            const dotFwd  =  dx * cosA + dy * sinA;
+            const dotSide = -dx * sinA + dy * cosA;
+            const isTeam  = other.team === this.team;
 
             if (isGrace) {
-                // During grace: just keep distance, no racing
                 if (dotFwd > 0 && dotFwd < 55 && Math.abs(dotSide) < 30) {
                     throttle = Math.min(throttle, 0.5);
                 }
                 continue;
             }
 
-            const isTeam = other.team === this.team;
-
-            // Slipstream: nearly in line with car ahead
             if (dotFwd > 35 && dotFwd < 140 && Math.abs(dotSide) < 24) {
                 this.slipstreaming = true;
             }
 
-            // Car in our lane, ahead
             if (dotFwd > 0 && dotFwd < 110 && Math.abs(dotSide) < 28) {
                 if (!carAhead || dotFwd < carAhead.fwd) {
                     carAhead = { car: other, dist, fwd: dotFwd, side: dotSide, isTeam };
                 }
             }
 
-            // Car behind us
             if (dotFwd < 0 && dotFwd > -80 && Math.abs(dotSide) < 30) {
                 if (!carBehind || -dotFwd < -carBehind.fwd) {
                     carBehind = { car: other, dist, fwd: dotFwd, side: dotSide, isTeam };
                 }
             }
 
-            // Side-by-side: roughly level, close laterally
             if (Math.abs(dotFwd) < 32 && Math.abs(dotSide) < 44 && dist < 50) {
                 if (!carAlongside || dist < carAlongside.dist) {
                     carAlongside = { car: other, dist, fwd: dotFwd, side: dotSide, isTeam };
@@ -275,7 +316,6 @@ class Car {
         }
 
         if (isGrace) {
-            // Don't apply any racing logic during grace period
             if (this.slipstreaming) throttle = Math.min(1.0, throttle + 0.15);
             return { throttle, brake, steer };
         }
@@ -286,98 +326,82 @@ class Car {
             this.blocked = true;
 
             if (isOvertaking) {
-                // *** ACTIVELY OVERTAKING ***
-                // Don't limit throttle — let the lateral move do the work.
-                // Only emergency brake if we somehow stayed directly behind and are about to hit.
+                // Actively overtaking: don't slow down. Emergency brake only if truly about to hit.
                 if (fwd < 22 && Math.abs(side) < 22) {
                     throttle = Math.min(throttle, 0.25);
-                    brake = Math.max(brake, 0.4);
+                    brake    = Math.max(brake, 0.4);
                 }
-                // If no car is ahead in our lane (we slid past), clear overtake early
             } else {
-                // *** FOLLOWING MODE ***
+                // Following mode
                 if (fwd < 28) {
-                    // Very close: don't hit them
                     throttle = 0;
                     brake = Math.max(brake, Math.min(0.65, (28 - fwd) / 18));
                 } else if (fwd < 55) {
-                    // Close: ease off
                     throttle = Math.min(throttle, 0.35 + (fwd - 28) / 60);
                 } else {
-                    // Moderate gap: slight ease
                     throttle = Math.min(throttle, 0.82);
                 }
 
-                // *** DECIDE TO OVERTAKE ***
-                if (this.overtakeTimer <= 0) {
+                // --- DECIDE TO OVERTAKE ---
+                // Lap 1: be cautious, no risky moves
+                const canTryOvertake = !isLap1 || (isTeam === false && this.stats.aggression > 0.7 && isOnStraight);
+
+                if (this.overtakeTimer <= 0 && canTryOvertake) {
                     let commit = false;
-                    // Choose which side to go: opposite of where the car is laterally,
-                    // or to the inside of the next corner.
-                    let overtakeSide = side >= 0 ? -1 : 1; // opposite side of blocker
+                    let overtakeSide = side >= 0 ? -1 : 1;
 
                     if (isTeam) {
-                        // Only pass teammate if clearly faster and on a straight
                         const isFaster = this.bestLapTime < carAhead.car.bestLapTime * 0.97;
                         if (isFaster && isOnStraight && fwd < 90) commit = true;
                     } else {
-                        // Speed cars & moderate aggression: pass on straights
                         if (isOnStraight && this.stats.aggression > 0.3 && fwd < 100) {
                             commit = true;
-                            // Use slipstream side preference: pull out same direction we want to go
                         }
-                        // Late brakers: set up a dive into the inside of the upcoming corner
                         if (this.stats.braking > 1.05 && !isOnStraight && maxCurv > 0.02 && maxCurv < 0.08) {
                             const futurePts = Math.round(brakePts * 0.6);
                             const cornerDir = this.getCurveDirection((this.trackIndex + futurePts) % n);
-                            overtakeSide = -cornerDir; // inside of corner
+                            overtakeSide = -cornerDir;
                             commit = true;
                         }
-                        // Aggressive/risky: attempt in moderate bends too
                         if (this.stats.aggression > 0.65 && maxCurv < 0.055 && fwd < 90) {
                             commit = true;
                         }
-                        // Cornering specialist: pass on corner exit (curv dropping)
                         if (this.stats.cornering > 1.08 && curNear > 0.02 && maxCurv < 0.02 && fwd < 90) {
                             commit = true;
                         }
                     }
 
                     if (commit) {
-                        // Make sure the target lane is actually clear (not blocked by another car)
                         const targetOff = overtakeSide * (tw * 0.26);
                         if (Math.abs(targetOff - lateralOffset) > 8) {
-                            this.overtakeSide = overtakeSide;
-                            this.targetLane   = overtakeSide * 0.82;
+                            this.overtakeSide  = overtakeSide;
+                            this.targetLane    = overtakeSide * 0.82;
                             this.overtakeTimer = 2.0 + Math.random() * 0.8;
                         }
                     }
                 }
             }
         } else if (isOvertaking) {
-            // No car ahead in our lane: pass is complete, return to line
             this.overtakeTimer = 0;
         }
 
-        // --- SIDE-BY-SIDE: avoid sideswiping ---
-        // Apply only when NOT in the middle of an overtake (otherwise we fight ourselves)
+        // --- SIDE-BY-SIDE: gentle push-away (disabled during active overtake) ---
         if (carAlongside && !isOvertaking) {
             const { side } = carAlongside;
-            // Gently steer away
             if (side > 0) steer = Math.min(steer, -0.28);
             else           steer = Math.max(steer,  0.28);
         }
 
-        // --- DEFENDING: block attacker coming from behind ---
-        if (carBehind && !isOvertaking && this.defendTimer <= 0) {
+        // --- DEFENDING ---
+        if (carBehind && !isOvertaking && !isLap1 && this.defendTimer <= 0) {
             const { fwd, side, isTeam } = carBehind;
             if (!isTeam && -fwd < 50 && this.stats.aggression > 0.35 && maxCurv < 0.05) {
-                // Move to cover the side they're approaching from
                 this.targetLane  = side > 0 ? 0.32 : -0.32;
                 this.defendTimer = 0.9;
             }
         }
 
-        // --- RETURN TO LINE when no active manoeuvre ---
+        // --- RETURN TO LINE ---
         if (!this.blocked && !isOvertaking && !isDefending) {
             this.targetLane *= 0.93;
         }
@@ -393,7 +417,9 @@ class Car {
     // -------------------------------------------------------------------------
 
     applyPhysics(throttle, brake, steer, dt) {
-        const maxSpeed  = 350 * this.stats.topSpeed;
+        const baseMaxSpeed = 350 * this.stats.topSpeed;
+        // Catch-up: backmarkers get a speed boost
+        const maxSpeed  = baseMaxSpeed * (1 + this.catchupFactor * 0.18);
         const accel     = 220 * this.stats.accel;
         const brkForce  = 450 * this.stats.braking;
         const engBrake  = 30;
@@ -401,24 +427,35 @@ class Car {
         const steerRate = 3.0;
 
         let force = throttle * accel - brake * brkForce - engBrake - this.speed * drag;
-        this.speed = Math.max(0, Math.min(maxSpeed, this.speed + force * dt));
+
+        // Boost pad: big extra force (and override max speed slightly)
+        if (this.boostTimer > 0) {
+            this.boostTimer -= dt;
+            force += accel * 1.0; // double accel during boost
+        }
+
+        this.speed = Math.max(0, Math.min(maxSpeed * (this.boostTimer > 0 ? 1.35 : 1), this.speed + force * dt));
 
         if (this.offTrack) this.speed *= (1 - dt * 2.0);
 
-        const steerFactor = steerRate * (1 - (this.speed / maxSpeed) * 0.35);
+        // Oil slick: decay
+        if (this.oilTimer > 0) this.oilTimer -= dt;
+
+        // Steering
+        const steerFactor = steerRate * (1 - (this.speed / baseMaxSpeed) * 0.35);
         this.angle += steer * steerFactor * dt;
 
         this.x += Math.cos(this.angle) * this.speed * dt;
         this.y += Math.sin(this.angle) * this.speed * dt;
 
-        // Hard boundary: don't leave the track surface
+        // Hard boundary
         const cl = Track.closestPoint(this.x, this.y);
         const maxDist = Track.getWidth() * 0.52;
         if (cl.dist > maxDist) {
-            const cps = Track.getPoints();
-            const ccp = cps[cl.index];
+            const cpts = Track.getPoints();
+            const ccp  = cpts[cl.index];
             const dx = this.x - ccp.x, dy = this.y - ccp.y;
-            const d = Math.sqrt(dx * dx + dy * dy);
+            const d  = Math.sqrt(dx * dx + dy * dy);
             if (d > 0) {
                 this.x = ccp.x + (dx / d) * maxDist;
                 this.y = ccp.y + (dy / d) * maxDist;
@@ -483,7 +520,7 @@ class Car {
     }
 
     // -------------------------------------------------------------------------
-    // Progress tracking
+    // Progress
     // -------------------------------------------------------------------------
 
     updateProgress(raceTime) {
@@ -519,6 +556,10 @@ class Car {
         if (this.offTrack && this.speed > 30) {
             Effects.addDirt(this.x, this.y, this.angle);
         }
+        // Boost trail
+        if (this.boostTimer > 0) {
+            Effects.addTireSmoke(this.x, this.y, this.angle + Math.PI, 0.5);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -532,33 +573,46 @@ class Car {
         ctx.translate(this.x, this.y);
         ctx.rotate(this.angle);
 
+        // Boost glow
+        if (this.boostTimer > 0) {
+            ctx.save();
+            ctx.globalAlpha = 0.45;
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur = 18;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 26, 14, 0, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFD70033';
+            ctx.fill();
+            ctx.restore();
+        }
+
         // Shadow
         ctx.save();
         ctx.globalAlpha = 0.3;
         ctx.fillStyle = '#000';
         ctx.beginPath();
-        ctx.ellipse(2, 2, 20, 10, 0, 0, Math.PI * 2);
+        ctx.ellipse(2, 2, 22, 11, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
 
-        const w = 40, h = 22;
+        const w = 52, h = 28;
         ctx.drawImage(this.image, -w / 2, -h / 2, w, h);
 
         // Brake lights
         if (this.braking) {
-            ctx.fillStyle = 'rgba(255,0,0,0.7)';
-            ctx.fillRect(-w / 2 - 1, -4, 3, 3);
-            ctx.fillRect(-w / 2 - 1,  1, 3, 3);
+            ctx.fillStyle = 'rgba(255,0,0,0.8)';
+            ctx.fillRect(-w / 2 - 1, -5, 3, 4);
+            ctx.fillRect(-w / 2 - 1,  2, 3, 4);
         }
 
         // Position badge
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(-6, -h / 2 - 11, 12, 9);
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 8px Arial';
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(-8, -h / 2 - 14, 16, 11);
+        ctx.fillStyle = this.position === 1 ? '#FFD700' : '#fff';
+        ctx.font = 'bold 10px Arial';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`P${this.position}`, 0, -h / 2 - 7);
+        ctx.fillText(`P${this.position}`, 0, -h / 2 - 8);
 
         ctx.restore();
     }
