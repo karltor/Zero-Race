@@ -214,11 +214,26 @@ const Track = (() => {
             if (curv > 0.06) {
                 const norm = normalAt(i);
                 const intensity = Math.min(1, curv * 5);
+
+                // At tight corners the inner-side marker falls on the road surface because
+                // the inner radius is very small. Compute which side is outer via cross
+                // product, then skip the inner side if the corner is tight.
+                const look = 5;
+                const p0 = points[(i - look + n) % n];
+                const p2 = points[(i + look) % n];
+                const cross = (points[i].x - p0.x) * (p2.y - points[i].y) -
+                              (points[i].y - p0.y) * (p2.x - points[i].x);
+                // outerSide: the side the road bends away from (positive = +norm direction)
+                const outerSide = cross >= 0 ? 1 : -1;
+
                 for (const side of [1, -1]) {
-                    const off = (trackWidth/2 + 1) * side;
+                    // For tight corners, skip inner-side marker — it would overlap the road
+                    if (curv > 0.09 && side !== outerSide) continue;
+
+                    const off = (trackWidth / 2 + 1) * side;
                     const px = points[i].x + norm.x * off;
                     const py = points[i].y + norm.y * off;
-                    ctx.fillStyle = Math.floor(i/3) % 2 === 0
+                    ctx.fillStyle = Math.floor(i / 3) % 2 === 0
                         ? `rgba(204,34,34,${intensity * 0.8})`
                         : `rgba(255,255,255,${intensity * 0.8})`;
                     ctx.fillRect(px - 4, py - 4, 8, 8);

@@ -153,8 +153,8 @@ const PowerUps = (() => {
             // ── Dead-zone check: is this pad in the empty part of the track? ──
             pad.inDeadZone = _isInDeadZone(pad.trackProgress, leaderFrac, lastFrac);
 
-            // Pads in the racing zone show as grey but cannot be collected
-            if (!pad.inDeadZone) continue;
+            // Pads in the dead zone (empty track) are greyed out — no cars to collect them
+            if (pad.inDeadZone) continue;
 
             // ── Collision — leader is explicitly excluded ──
             for (const car of cars) {
@@ -322,8 +322,8 @@ const PowerUps = (() => {
             ctx.translate(pad.x, pad.y);
             ctx.rotate(pad.angle);
 
-            if (!pad.inDeadZone) {
-                // ── Grey / dormant (racing zone) ──
+            if (pad.inDeadZone) {
+                // ── Grey / dormant — in the empty dead zone, no cars here ──
                 ctx.globalAlpha = 0.30;
                 _arrowPath(ctx);
                 ctx.fillStyle = '#aaaaaa';
@@ -335,7 +335,7 @@ const PowerUps = (() => {
                 continue;
             }
 
-            // ── Golden / active (dead zone) ──
+            // ── Golden / active — in the racing zone where chasing cars are ──
             const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + pad.x * 0.01);
             const glowRadius = 18 + pulse * 12;
             const baseAlpha  = 0.55 + pulse * 0.45;
