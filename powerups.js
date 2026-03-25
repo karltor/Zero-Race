@@ -67,8 +67,9 @@ const PowerUps = (() => {
                 angle: angle,
                 active: true,
                 cooldownTimer: 0,
-                trackProgress: progress,   // fractional position around track (0-1)
-                leaderPassed: false        // becomes true once P1 has driven past this point
+                trackProgress: progress,    // fractional position around track (0-1)
+                leaderPassed: false,        // becomes true once P1 has driven past this point
+                unlockThreshold: -1         // computed on first update; leader.totalProgress must reach this
             });
         }
 
@@ -93,20 +94,35 @@ const PowerUps = (() => {
     }
 
     /** Tick pad cooldowns and test car overlaps.
-     *  Pads only light up once the race leader has driven past that track position.
-     *  Boost duration scales with the gap between the triggered car and the leader.
+     *  Pads only light up once the race leader has driven PAST that track position.
+     *  We compute a continuous totalProgress threshold per pad on the first update so
+     *  the leader's starting position (e.g. 0.97) doesn't instantly unlock all pads.
      */
     function _updateBoostPads(dt, cars, leader) {
-        // Unlock pads the leader has passed
         if (leader) {
-            const leaderFrac = leader.totalProgress % 1; // fractional position this lap
-            const leaderLaps = Math.floor(leader.totalProgress);
+            const leaderTotal = leader.totalProgress;
+            const leaderFrac  = leaderTotal % 1;
+            const leaderLaps  = Math.floor(leaderTotal);
+
             for (const pad of boostPads) {
-                if (!pad.leaderPassed) {
-                    // Unlocked once the leader is past this track fraction on any lap
-                    if (leaderLaps >= 1 || leaderFrac > pad.trackProgress) {
-                        pad.leaderPassed = true;
+                if (pad.leaderPassed) continue;
+
+                // Compute unlock threshold once, on the first frame the leader exists.
+                // Threshold = the next time leader.totalProgress crosses pad.trackProgress
+                // going forward from the leader's starting position.
+                if (pad.unlockThreshold < 0) {
+                    if (leaderFrac > pad.trackProgress) {
+                        // Leader has already passed this fraction in the current lap;
+                        // must wait until next lap to physically cross it again.
+                        pad.unlockThreshold = leaderLaps + 1 + pad.trackProgress;
+                    } else {
+                        // Leader hasn't reached this fraction yet this lap.
+                        pad.unlockThreshold = leaderLaps + pad.trackProgress;
                     }
+                }
+
+                if (leaderTotal >= pad.unlockThreshold) {
+                    pad.leaderPassed = true;
                 }
             }
         }

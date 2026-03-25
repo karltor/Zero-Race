@@ -4,6 +4,42 @@
  * Per-car racing line preferences create visible driving variety.
  */
 
+/**
+ * Returns a point on the perimeter of a rounded rectangle at fractional position t (0–1),
+ * going clockwise from the top-left corner. hw/hh = half-width/height, cr = corner radius.
+ */
+function _carPerimPt(t, hw, hh, cr) {
+    const sH = 2 * (hw - cr); // horizontal straight length
+    const sV = 2 * (hh - cr); // vertical straight length
+    const ca = (Math.PI / 2) * cr; // quarter-arc length
+    const total = 2 * sH + 2 * sV + 4 * ca;
+    let d = ((t % 1) + 1) % 1 * total;
+
+    // TL corner (π → 3π/2)
+    if (d < ca) { const a = Math.PI + (d / ca) * (Math.PI / 2); return { x: (-hw + cr) + cr * Math.cos(a), y: (-hh + cr) + cr * Math.sin(a) }; }
+    d -= ca;
+    // Top straight (left → right)
+    if (d < sH) { return { x: -hw + cr + d, y: -hh }; }
+    d -= sH;
+    // TR corner (3π/2 → 2π)
+    if (d < ca) { const a = 3 * Math.PI / 2 + (d / ca) * (Math.PI / 2); return { x: (hw - cr) + cr * Math.cos(a), y: (-hh + cr) + cr * Math.sin(a) }; }
+    d -= ca;
+    // Right straight (top → bottom)
+    if (d < sV) { return { x: hw, y: -hh + cr + d }; }
+    d -= sV;
+    // BR corner (0 → π/2)
+    if (d < ca) { const a = (d / ca) * (Math.PI / 2); return { x: (hw - cr) + cr * Math.cos(a), y: (hh - cr) + cr * Math.sin(a) }; }
+    d -= ca;
+    // Bottom straight (right → left)
+    if (d < sH) { return { x: hw - cr - d, y: hh }; }
+    d -= sH;
+    // BL corner (π/2 → π)
+    if (d < ca) { const a = Math.PI / 2 + (d / ca) * (Math.PI / 2); return { x: (-hw + cr) + cr * Math.cos(a), y: (hh - cr) + cr * Math.sin(a) }; }
+    d -= ca;
+    // Left straight (bottom → top)
+    return { x: -hw, y: hh - cr - d };
+}
+
 const CAR_PROFILES = {
     1: { topSpeed: 1.03, accel: 1.00, braking: 1.00, cornering: 1.00, aggression: 0.50 },
     2: { topSpeed: 0.98, accel: 0.96, braking: 1.12, cornering: 1.05, aggression: 0.30 },
@@ -69,7 +105,8 @@ class Car {
     placeOnTrack(progress, laneOffset) {
         this.progress = ((progress % 1) + 1) % 1;
         this.lap = 0;
-        this.totalProgress = 0;
+        // Use actual fractional progress so grid order is preserved in the initial sort
+        this.totalProgress = this.progress;
         this.speed = 0;
         this.bestLapTime = Infinity;
         this.currentLapTime = 0;
@@ -573,22 +610,26 @@ class Car {
         ctx.translate(this.x, this.y);
         ctx.rotate(this.angle);
 
-        // Rainbow spinning outline for P1 (race leader)
+        // Rainbow highlight tracing the car outline for P1 (race leader)
         if (this.position === 1) {
             const now = Date.now();
-            const segments = 14;
             ctx.save();
-            ctx.lineWidth = 3;
-            for (let i = 0; i < segments; i++) {
-                const hue = (now * 0.12 + (i / segments) * 360) % 360;
-                const sa = (i / segments) * Math.PI * 2 + now * 0.0025;
-                const ea = ((i + 1) / segments) * Math.PI * 2 + now * 0.0025;
+            ctx.lineWidth = 2.8;
+            ctx.lineCap = 'round';
+            // Outline box slightly larger than the car sprite (52×28)
+            const hw = 30, hh = 17, cr = 5;
+            const N  = 48; // segments around the perimeter
+            for (let i = 0; i < N; i++) {
+                const p0 = _carPerimPt(i / N,     hw, hh, cr);
+                const p1 = _carPerimPt((i + 1) / N, hw, hh, cr);
+                const hue = ((now * 0.09 + (i / N) * 360) % 360 + 360) % 360;
                 ctx.strokeStyle = `hsl(${hue}, 100%, 62%)`;
-                ctx.shadowColor  = `hsl(${hue}, 100%, 70%)`;
-                ctx.shadowBlur   = 10;
-                ctx.globalAlpha  = 0.85;
+                ctx.shadowColor  = `hsl(${hue}, 100%, 72%)`;
+                ctx.shadowBlur   = 7;
+                ctx.globalAlpha  = 0.92;
                 ctx.beginPath();
-                ctx.ellipse(0, 0, 30, 17, 0, sa, ea);
+                ctx.moveTo(p0.x, p0.y);
+                ctx.lineTo(p1.x, p1.y);
                 ctx.stroke();
             }
             ctx.restore();

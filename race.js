@@ -12,7 +12,7 @@ const Race = (() => {
     const TEAMS = ['blue', 'yellow', 'red', 'green'];
     const CARS_PER_TEAM = 2;
     const TOTAL_LAPS = 10;
-    const TRANSITION_DURATION = 5500; // ms
+    const TRANSITION_DURATION = 9500; // ms (5.5s display + 4s extra)
 
     const TEAM_NUMBERS = { blue: [1, 2], yellow: [3, 4], red: [5, 6], green: [7, 8] };
 
@@ -91,7 +91,7 @@ const Race = (() => {
         for (let i = 0; i < active.length; i++) active[i].position = i + 1;
         leader = active[0] || cars[0];
 
-        PowerUps.update(dtSec, cars, leader);
+        // No power-ups during qualifying — pure time trial
 
         // Detect qualifying lap completions
         for (const car of cars) {
@@ -137,7 +137,8 @@ const Race = (() => {
         for (let i = 0; i < qualifyingResults.length; i++) {
             const car = qualifyingResults[i].car;
             const side = i % 2 === 0 ? -1 : 1;
-            car.placeOnTrack(1 - i * 0.012, side * 16);
+            // Start at 0.97 so pole car is before the line (1.0 wraps to 0.0 = last in sort)
+            car.placeOnTrack(0.97 - i * 0.012, side * 16);
         }
         PowerUps.init();
         finishOrder = [];
@@ -255,105 +256,126 @@ const Race = (() => {
         const t = phaseTimer / TRANSITION_DURATION; // 0 → 1
         ctx.save();
 
-        // Animated dark gradient background
-        const overlayAlpha = Math.min(1, t * 4) * 0.88;
-        ctx.fillStyle = `rgba(5, 5, 20, ${overlayAlpha})`;
+        // Dark overlay
+        const overlayAlpha = Math.min(1, t * 5) * 0.91;
+        ctx.fillStyle = `rgba(4, 6, 22, ${overlayAlpha})`;
         ctx.fillRect(0, 0, W, H);
 
         // ── HEADER ──
-        const headerT = Math.max(0, Math.min(1, (t - 0.0) / 0.15));
-        const headerScale = 0.5 + 0.5 * headerT;
+        const headerT = Math.max(0, Math.min(1, t / 0.10));
         ctx.globalAlpha = headerT;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.save();
-        ctx.translate(cx, cy - 160);
-        ctx.scale(headerScale, headerScale);
-        ctx.shadowColor = '#00ccff';
-        ctx.shadowBlur = 30;
-        ctx.fillStyle = '#00ccff';
-        ctx.font = 'bold 32px Arial';
+        ctx.translate(cx, cy - 195);
+        const hs = 0.6 + 0.4 * headerT;
+        ctx.scale(hs, hs);
+        ctx.shadowColor = '#00d4ff';
+        ctx.shadowBlur = 28;
+        ctx.fillStyle = '#00d4ff';
+        ctx.font = 'bold 38px Arial';
         ctx.fillText('QUALIFYING COMPLETE', 0, 0);
         ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.font = '13px Arial';
-        ctx.fillText('GRID POSITIONS LOCKED IN', 0, 32);
+        ctx.fillStyle = 'rgba(160, 230, 255, 0.75)';
+        ctx.font = '15px Arial';
+        ctx.fillText('GRID POSITIONS LOCKED IN', 0, 40);
         ctx.restore();
 
         // ── RESULT ROWS ──
-        const rowHeight = 36;
-        const listTop = cy - 110;
-        const rowRevealStart = 0.12;
-        const rowRevealStep = 0.09;
+        const rowHeight = 50;   // spacing between row tops
+        const rowH      = 42;   // visible row height
+        const rowW      = 510;
+        const rowX      = cx - rowW / 2;
+        const listTop   = cy - 155;
+        const rowRevealStart = 0.09;
+        const rowRevealStep  = 0.08;
 
         for (let i = 0; i < qualifyingResults.length; i++) {
             const { car, lapTime } = qualifyingResults[i];
-            const rowT = Math.max(0, Math.min(1, (t - rowRevealStart - i * rowRevealStep) / 0.12));
+            const rowT = Math.max(0, Math.min(1, (t - rowRevealStart - i * rowRevealStep) / 0.09));
             if (rowT <= 0) continue;
 
-            const y = listTop + i * rowHeight;
-            const slideX = (1 - rowT) * 250; // slide in from right
+            const rowY  = listTop + i * rowHeight;
+            const midY  = rowY + rowH / 2;
+            const slideX = (1 - rowT) * 320;
 
             ctx.save();
-            ctx.globalAlpha = rowT * 0.95;
+            ctx.globalAlpha = rowT;
             ctx.translate(slideX, 0);
 
-            const colors = CarSVG.TEAM_COLORS[car.team];
+            const colors  = CarSVG.TEAM_COLORS[car.team];
             const isFirst = i === 0;
 
             // Row background
-            const rowW = 460, rowH = 30, rowX = cx - rowW / 2;
-            ctx.fillStyle = isFirst ? 'rgba(255,215,0,0.12)' : 'rgba(255,255,255,0.05)';
+            ctx.fillStyle = isFirst
+                ? 'rgba(255, 215, 0, 0.14)'
+                : (i % 2 === 0 ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.18)');
             ctx.beginPath();
-            ctx.roundRect(rowX, y - rowH / 2, rowW, rowH, 4);
+            ctx.roundRect(rowX, rowY, rowW, rowH, 5);
             ctx.fill();
 
-            // Left accent bar
+            // Left accent bar (team colour)
             ctx.fillStyle = colors.light;
-            ctx.fillRect(rowX, y - rowH / 2, 4, rowH);
+            ctx.beginPath();
+            ctx.roundRect(rowX, rowY, 5, rowH, [5, 0, 0, 5]);
+            ctx.fill();
 
-            // Position badge
+            // Team colour circle
+            ctx.beginPath();
+            ctx.arc(rowX + 28, midY, 9, 0, Math.PI * 2);
+            ctx.fillStyle = colors.light;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Position
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            ctx.font = `bold 14px Arial`;
-            ctx.fillStyle = isFirst ? '#ffd700' : 'rgba(255,255,255,0.55)';
-            ctx.fillText(`P${i + 1}`, rowX + 14, y);
+            ctx.font = isFirst ? 'bold 22px Arial' : 'bold 14px Arial';
+            ctx.fillStyle = isFirst ? '#ffd700' : 'rgba(255,255,255,0.45)';
+            ctx.fillText(`P${i + 1}`, rowX + 46, midY);
 
             // Car name
-            ctx.fillStyle = colors.light;
-            ctx.font = 'bold 14px Arial';
-            ctx.fillText(car.name, rowX + 55, y);
+            ctx.font = isFirst ? 'bold 20px Arial' : 'bold 15px Arial';
+            ctx.fillStyle = isFirst ? '#ffffff' : colors.light;
+            ctx.fillText(car.name, rowX + 90, midY);
 
-            // Lap time
-            ctx.textAlign = 'right';
-            ctx.fillStyle = isFirst ? '#ffd700' : '#ccc';
-            ctx.font = '13px monospace';
+            // Lap time (right-aligned)
             const timeStr = lapTime ? _formatTime(lapTime) : 'DNF';
-            ctx.fillText(timeStr, rowX + rowW - 14, y);
+            ctx.textAlign = 'right';
 
-            // Gap to P1
             if (i > 0 && lapTime && qualifyingResults[0].lapTime) {
+                // Time on top line, gap below
+                ctx.font = '15px monospace';
+                ctx.fillStyle = '#dde8ff';
+                ctx.fillText(timeStr, rowX + rowW - 16, midY - 8);
                 const gap = lapTime - qualifyingResults[0].lapTime;
-                ctx.fillStyle = 'rgba(255,255,255,0.4)';
-                ctx.font = '11px monospace';
-                ctx.fillText(`+${_formatTime(gap)}`, rowX + rowW - 14, y + 10);
+                ctx.font = '12px monospace';
+                ctx.fillStyle = 'rgba(255, 110, 110, 0.9)';
+                ctx.fillText(`+${_formatTime(gap)}`, rowX + rowW - 16, midY + 9);
+            } else {
+                ctx.font = isFirst ? 'bold 20px monospace' : '15px monospace';
+                ctx.fillStyle = isFirst ? '#ffd700' : '#dde8ff';
+                ctx.fillText(timeStr, rowX + rowW - 16, midY);
             }
 
             ctx.restore();
         }
 
-        // ── RACE STARTS IN countdown (last ~2 seconds) ──
-        const ctdwnT = Math.max(0, (t - 0.65) / 0.1);
+        // ── RACE STARTS IN (last 4 seconds) ──
+        const ctdwnStart = 1 - (4200 / TRANSITION_DURATION);
+        const ctdwnT = Math.max(0, (t - ctdwnStart) / 0.06);
         if (ctdwnT > 0) {
-            ctx.globalAlpha = ctdwnT;
             const remaining = Math.max(0, TRANSITION_DURATION - phaseTimer);
+            ctx.globalAlpha = Math.min(1, ctdwnT);
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.font = 'bold 22px Arial';
-            ctx.fillStyle = '#ff4444';
             ctx.shadowColor = '#ff4444';
-            ctx.shadowBlur = 15;
-            ctx.fillText(`RACE STARTS IN ${(remaining / 1000).toFixed(1)}s`, cx, cy + 155);
+            ctx.shadowBlur = 22;
+            ctx.fillStyle = '#ff6060';
+            ctx.font = 'bold 26px Arial';
+            ctx.fillText(`RACE STARTS IN  ${(remaining / 1000).toFixed(1)}s`, cx, listTop + 8 * rowHeight + 28);
             ctx.shadowBlur = 0;
         }
 
