@@ -226,7 +226,7 @@ class Car {
         const brakingDecel = 450 * this.stats.braking;
         const brakingPx = (this.speed * this.speed) / (2 * brakingDecel);
         const pxPerPt   = Track.getTrackLength() / n;
-        const brakePts  = Math.max(12, Math.min(120, Math.round(brakingPx / pxPerPt * 1.5)));
+        const brakePts  = Math.max(12, Math.min(100, Math.round(brakingPx / pxPerPt * 1.2)));
         const nearPts   = Math.max(4,  Math.round(brakePts * 0.2));
 
         const maxCurv = this.maxCurvatureAhead(nearPts, brakePts);
@@ -234,7 +234,7 @@ class Car {
         const isOnStraight = maxCurv < 0.018;
 
         // --- CORNER SPEED ---
-        const cornerSpeed = maxSpeed * Math.max(0.32, 1 - maxCurv * 4.2 / this.stats.cornering);
+        const cornerSpeed = maxSpeed * Math.max(0.40, 1 - maxCurv * 3.2 / this.stats.cornering);
 
         // --- RACING LINE (outside → apex → outside with per-car personality) ---
         // Detect corner phase: approaching (curv increasing) vs apex vs exiting
@@ -301,13 +301,13 @@ class Car {
         this.braking = false;
 
         const speedExcess = this.speed - cornerSpeed;
-        if (speedExcess > 2) {
-            const brakePow = Math.min(1.0, speedExcess / (maxSpeed * 0.20) * this.stats.braking);
+        if (speedExcess > 5) {
+            const brakePow = Math.min(0.95, speedExcess / (maxSpeed * 0.28) * this.stats.braking);
             brake    = brakePow;
             throttle = 0;
             this.braking = true;
-        } else if (speedExcess > -4) {
-            throttle = 0.12;
+        } else if (speedExcess > -8) {
+            throttle = 0.15 + Math.max(0, -speedExcess) / (maxSpeed * 0.15) * 0.35;
         } else {
             throttle = isOnStraight ? 1.0 : Math.min(1.0, 0.5 + (-speedExcess) / (maxSpeed * 0.3));
         }
@@ -607,6 +607,7 @@ class Car {
     // -------------------------------------------------------------------------
 
     emitEffects(brakeAmount) {
+        if (this._finishedRace) return;
         if (this.braking && brakeAmount > 0.4 && this.speed > 60) {
             Effects.addSkidMark(this.x, this.y, this.angle, brakeAmount);
             if (brakeAmount > 0.6) Effects.addTireSmoke(this.x, this.y, this.angle, brakeAmount);
