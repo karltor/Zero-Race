@@ -5,7 +5,6 @@
     const canvas = document.getElementById('trackCanvas');
     const ctx = canvas.getContext('2d');
     const btnRestart = document.getElementById('btn-restart');
-    const btnSpeed = document.getElementById('btn-speed');
 
     let lastTimestamp = 0;
     let trackImage = null;
@@ -103,14 +102,6 @@
     }
 
     btnRestart.addEventListener('click', initRace);
-
-    const speeds = [1, 2, 4, 8];
-    let speedIdx = 0;
-    btnSpeed.addEventListener('click', () => {
-        speedIdx = (speedIdx + 1) % speeds.length;
-        Race.setSpeed(speeds[speedIdx]);
-        btnSpeed.textContent = `SPEED: ${speeds[speedIdx]}x`;
-    });
 
     window.addEventListener('resize', () => {
         resize();

@@ -15,23 +15,22 @@ const Track = (() => {
         const rx = (w - margin * 2) / 2;
         const ry = (h - margin * 2) / 2;
 
-        // Try up to 6 times; regenerate if the track would produce visible edge crossings.
-        for (let attempt = 0; attempt < 6; attempt++) {
+        // Try up to 12 times; regenerate if edge lines would visually self-intersect.
+        for (let attempt = 0; attempt < 12; attempt++) {
             const numCtrl = 8 + Math.floor(Math.random() * 5);
             const ctrl = [];
             for (let i = 0; i < numCtrl; i++) {
                 const angle = (i / numCtrl) * Math.PI * 2;
-                // 0.38–1.0 allows moderate concavity (C/horseshoe shapes) without being
-                // so extreme that the spline doubles back on itself.
-                const rVar = 0.38 + Math.random() * 0.62;
+                // 0.45–1.0: enough inward range for interesting concave shapes without
+                // making the spline tight enough to produce V-corner self-intersections.
+                const rVar = 0.45 + Math.random() * 0.55;
                 ctrl.push({
                     x: cx + Math.cos(angle) * rx * rVar,
                     y: cy + Math.sin(angle) * ry * rVar
                 });
             }
 
-            // Only enforce ADJACENT pairs — pushing non-adjacent pairs apart causes the
-            // spline to make violent hairpins to reach the next control point.
+            // Only enforce ADJACENT pairs.
             for (let iter = 0; iter < 5; iter++) {
                 for (let i = 0; i < ctrl.length; i++) {
                     const next = ctrl[(i + 1) % ctrl.length];
@@ -51,9 +50,6 @@ const Track = (() => {
             points = catmullRomChain(ctrl, 50);
             computeLength();
 
-            // Validate: reject tracks where any corner is tighter than the track can
-            // handle — that's what creates the visual X crossings in the edge lines.
-            // curvatureAt > 0.17 means the inner edge would collapse/cross itself.
             if (_isTrackValid()) break;
         }
 
@@ -61,12 +57,43 @@ const Track = (() => {
         return points;
     }
 
+    /** Returns true only if neither track edge line self-intersects anywhere.
+     *  This directly tests for the condition that produces visible V-corner crossings.
+     *  We check each edge segment against the next 30 non-adjacent segments — enough
+     *  to catch any tight fold while remaining fast (O(n*60) ≈ 30 k ops).
+     */
     function _isTrackValid() {
-        const n = points.length;
-        for (let i = 0; i < n; i++) {
-            if (curvatureAt(i) > 0.17) return false;
+        const n   = points.length;
+        const hw  = trackWidth / 2;
+
+        for (const sign of [1, -1]) {
+            const edge = [];
+            for (let i = 0; i < n; i++) {
+                const norm = normalAt(i);
+                edge.push({
+                    x: points[i].x + norm.x * hw * sign,
+                    y: points[i].y + norm.y * hw * sign
+                });
+            }
+            for (let i = 0; i < n; i++) {
+                const a = edge[i], b = edge[(i + 1) % n];
+                for (let k = 2; k <= 30; k++) {
+                    const c = edge[(i + k) % n], d = edge[(i + k + 1) % n];
+                    if (_segIntersect(a, b, c, d)) return false;
+                }
+            }
         }
         return true;
+    }
+
+    function _segIntersect(p1, p2, p3, p4) {
+        const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
+        const d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+        const denom = d1x * d2y - d1y * d2x;
+        if (Math.abs(denom) < 1e-8) return false;
+        const t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / denom;
+        const u = ((p3.x - p1.x) * d1y - (p3.y - p1.y) * d1x) / denom;
+        return t > 0.01 && t < 0.99 && u > 0.01 && u < 0.99;
     }
 
     function catmullRomChain(ctrl, segPts) {
