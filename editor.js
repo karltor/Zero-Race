@@ -5,6 +5,7 @@
 const Editor = (() => {
     let _mx = 0, _my = 0;
     let _slide = 0;           // 0 = hidden, 1 = visible (animated)
+    let _pinned = false;      // true once panel has fully slid in; hides only on header click
     let _showCtrl = false;
     let _editMode = false;
     let _dragIdx  = -1;
@@ -117,6 +118,12 @@ const Editor = (() => {
         canvas.addEventListener('click', e => {
             if (_slide < 0.4) return;
             const { x, y } = _canvasXY(e);
+            // Click on header → dismiss (unpin) the panel
+            const hdrRect = { x: _px(), y: 14, w: PW, h: HDR_H };
+            if (_inRect(x, y, hdrRect)) {
+                _pinned = false;
+                return;
+            }
             for (let i = 0; i < BTNS.length; i++) {
                 if (_inRect(x, y, _btnRect(i))) {
                     _handleClick(BTNS[i].id);
@@ -146,8 +153,10 @@ const Editor = (() => {
 
     // ── update (call each frame with dt) ───────────────────────────────────
     function update(dt) {
-        const d2     = _mx * _mx + _my * _my;
-        const target = d2 < CORNER_R * CORNER_R ? 1 : 0;
+        const d2 = _mx * _mx + _my * _my;
+        // Latch: once fully open, stay open until header-click dismisses
+        if (!_pinned && _slide > 0.98) _pinned = true;
+        const target = (_pinned || d2 < CORNER_R * CORNER_R) ? 1 : 0;
         _slide += (target - _slide) * Math.min(1, dt / 120);
         _slide  = Math.max(0, Math.min(1, _slide));
     }
@@ -188,12 +197,17 @@ const Editor = (() => {
         ctx.fill();
         ctx.shadowBlur = 0;
 
-        // Header text
-        ctx.fillStyle = 'rgba(255,255,255,0.42)';
+        // Header text + close hint (clicking header dismisses panel)
+        const hdrHov = _inRect(_mx, _my, { x: px, y: py, w: PW, h: HDR_H });
+        ctx.fillStyle = hdrHov ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.42)';
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.fillText('⚙  TRACK EDITOR', px + 13, py + HDR_H / 2);
+        // "×" dismiss hint on the right
+        ctx.textAlign = 'right';
+        ctx.fillStyle = hdrHov ? 'rgba(255,255,255,0.70)' : 'rgba(255,255,255,0.22)';
+        ctx.fillText('×', px + PW - 12, py + HDR_H / 2);
 
         // Header separator
         ctx.strokeStyle = 'rgba(255,255,255,0.10)';
