@@ -105,8 +105,10 @@ class Car {
     placeOnTrack(progress, laneOffset) {
         this.progress = ((progress % 1) + 1) % 1;
         this.lap = 0;
-        // Use actual fractional progress so grid order is preserved in the initial sort
         this.totalProgress = this.progress;
+        // Remember where this car started so we can skip the partial first lap
+        // (grid cars start at ~0.97 and cross the line after only ~3% of the track)
+        this._startProgress = this.progress;
         this.speed = 0;
         this.bestLapTime = Infinity;
         this.currentLapTime = 0;
@@ -566,7 +568,11 @@ class Car {
         if (newProg - this.progress < -0.5) {
             this.lap++;
             const lapTime = raceTime - this.lapStartTime;
-            if (lapTime > 2000) {
+            // Skip the partial first crossing for grid cars: they start at ~0.97 so their
+            // first "lap" is only ~3% of the track (~2 s) and would corrupt best-lap data.
+            // Cars starting at progress ≤ 0.5 (qualifying) cross after a full lap — keep those.
+            const isPartialFirstLap = this.lap === 1 && (this._startProgress || 0) > 0.5;
+            if (!isPartialFirstLap && lapTime > 2000) {
                 this.lastLapTime = lapTime;
                 this.lapTimes.push(lapTime);
                 if (lapTime < this.bestLapTime) this.bestLapTime = lapTime;
