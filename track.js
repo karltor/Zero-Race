@@ -20,11 +20,11 @@ const Track = (() => {
 
         let validAttempt = -1;
         for (let attempt = 0; attempt < 14; attempt++) {
-            const numCtrl = 8 + Math.floor(Math.random() * 5);
+            const numCtrl = 10 + Math.floor(Math.random() * 6);  // 10-15 pts for complexity
             const ctrl = [];
             for (let i = 0; i < numCtrl; i++) {
                 const angle = (i / numCtrl) * Math.PI * 2;
-                const rVar = 0.55 + Math.random() * 0.30;  // [0.55, 0.85] — less extreme variation
+                const rVar = 0.30 + Math.random() * 0.60;  // [0.30, 0.90] — wide range for F1-style shapes
                 ctrl.push({
                     x: cx + Math.cos(angle) * rx * rVar,
                     y: cy + Math.sin(angle) * ry * rVar
@@ -53,12 +53,20 @@ const Track = (() => {
                 }
             }
 
+            // Reject immediately if the raw control polygon self-intersects.
+            // Cheaper to check now (10-15 pts) than after Chaikin (40-60 pts).
+            // Chaikin preserves self-intersections so a crossing polygon → crossing spline.
+            const ctrlCross = _findCtrlCross(ctrl);
+            if (ctrlCross) {
+                console.log(`[track] attempt ${attempt+1}/14 CTRL POLYGON crosses: seg ${ctrlCross.i}→${ctrlCross.i+1} X seg ${ctrlCross.j}→${ctrlCross.j+1} — retrying`);
+                continue;
+            }
+
             // Apply 2 passes of Chaikin's corner-cutting algorithm.
-            // Each pass replaces every edge with two new points at 25% and 75%
-            // of that edge, rounding off all sharp vertices.
-            // Mathematical guarantee: after 2 passes, every interior angle ≥ 135°,
-            // so no corner is ever tight enough to self-intersect the inner edge.
-            // (8-12 ctrl points → 16-24 after pass 1 → 32-48 after pass 2)
+            // Replaces every edge with two new points at 25% and 75%, rounding
+            // all sharp vertices. After 2 passes, all angles are guaranteed ≥ 135°,
+            // so the inner edge radius stays well above trackWidth/2 = 75px.
+            // Wide rVar (0.30–0.90) gives F1-style variety; Chaikin makes it driveable.
             for (let pass = 0; pass < 2; pass++) {
                 const smooth = [];
                 const nc = ctrl.length;
@@ -73,13 +81,6 @@ const Track = (() => {
             console.log(`[track] attempt ${attempt+1}/14 after Chaikin: ${ctrl.length} ctrl pts`);
 
             _debugCtrl = ctrl.map(p => ({ ...p }));  // store for overlay
-
-            // Reject immediately if the control polygon itself self-intersects.
-            const ctrlCross = _findCtrlCross(ctrl);
-            if (ctrlCross) {
-                console.log(`[track] attempt ${attempt+1}/14 CTRL POLYGON crosses: seg ${ctrlCross.i}→${ctrlCross.i+1} X seg ${ctrlCross.j}→${ctrlCross.j+1} — retrying`);
-                continue;
-            }
 
             points = catmullRomChain(ctrl, 15);  // 32-48 ctrl × 15 ≈ 500-700 pts total
             computeLength();
