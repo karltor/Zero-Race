@@ -93,68 +93,77 @@ const PowerUps = (() => {
         _applyCatchup(cars);
     }
 
+    /** Returns true if padFrac is in the "dead zone" — the empty stretch of track
+     *  going FORWARD from the leader to the last car, where boosts are allowed.
+     *  The "racing zone" (from last car forward to leader, where all cars are)
+     *  is boost-free.
+     */
+    function _isInDeadZone(padFrac, leaderFrac, lastFrac) {
+        // Dead zone: leaderFrac → (forward) → lastFrac
+        if (leaderFrac <= lastFrac) {
+            // No wrap: dead zone is [leaderFrac, lastFrac]
+            return padFrac >= leaderFrac && padFrac <= lastFrac;
+        } else {
+            // Wraps around 0/1: dead zone is [leaderFrac, 1) ∪ [0, lastFrac]
+            return padFrac >= leaderFrac || padFrac <= lastFrac;
+        }
+    }
+
     /** Tick pad cooldowns and test car overlaps.
-     *  Pads only light up once the race leader has driven PAST that track position.
-     *  We compute a continuous totalProgress threshold per pad on the first update so
-     *  the leader's starting position (e.g. 0.97) doesn't instantly unlock all pads.
+     *  Pads are only visible (golden) and collectable inside the "dead zone" —
+     *  the empty stretch of track from the leader forward to the last car.
+     *  Pads in the racing zone (between last car and leader) are greyed out.
+     *  The race leader can never collect a boost under any circumstances.
      */
     function _updateBoostPads(dt, cars, leader) {
-        if (leader) {
-            const leaderTotal = leader.totalProgress;
-            const leaderFrac  = leaderTotal % 1;
-            const leaderLaps  = Math.floor(leaderTotal);
+        if (!leader) return;
 
-            for (const pad of boostPads) {
-                if (pad.leaderPassed) continue;
+        const leaderTotal = leader.totalProgress;
+        const leaderFrac  = leaderTotal % 1;
+        const leaderLaps  = Math.floor(leaderTotal);
 
-                // Compute unlock threshold once, on the first frame the leader exists.
-                // Threshold = the next time leader.totalProgress crosses pad.trackProgress
-                // going forward from the leader's starting position.
-                if (pad.unlockThreshold < 0) {
-                    if (leaderFrac > pad.trackProgress) {
-                        // Leader has already passed this fraction in the current lap;
-                        // must wait until next lap to physically cross it again.
-                        pad.unlockThreshold = leaderLaps + 1 + pad.trackProgress;
-                    } else {
-                        // Leader hasn't reached this fraction yet this lap.
-                        pad.unlockThreshold = leaderLaps + pad.trackProgress;
-                    }
-                }
-
-                if (leaderTotal >= pad.unlockThreshold) {
-                    pad.leaderPassed = true;
-                }
-            }
+        // Find the car furthest behind (lowest totalProgress)
+        let lastCar = cars[0];
+        for (const c of cars) {
+            if (c.totalProgress < lastCar.totalProgress) lastCar = c;
         }
+        const lastFrac = lastCar.progress; // fractional position 0–1
 
         for (const pad of boostPads) {
-            // Invisible and inert until the leader has rolled past
-            if (!pad.leaderPassed) continue;
-
-            if (!pad.active) {
-                pad.cooldownTimer -= dt;
-                if (pad.cooldownTimer <= 0) {
-                    pad.active = true;
-                    pad.cooldownTimer = 0;
+            // ── Initial unlock: wait until leader physically passes this point ──
+            if (!pad.leaderPassed) {
+                if (pad.unlockThreshold < 0) {
+                    pad.unlockThreshold = leaderFrac > pad.trackProgress
+                        ? leaderLaps + 1 + pad.trackProgress
+                        : leaderLaps + pad.trackProgress;
                 }
+                if (leaderTotal >= pad.unlockThreshold) pad.leaderPassed = true;
+                pad.inDeadZone = false;
                 continue;
             }
 
-            // Check whether any car is close enough to trigger the pad.
-            for (const car of cars) {
-                const dx = car.x - pad.x;
-                const dy = car.y - pad.y;
-                if (dx * dx + dy * dy <= BOOST_PAD_RADIUS * BOOST_PAD_RADIUS) {
-                    // Gap-based boost: the further a car is behind the leader, the bigger
-                    // the boost.  Range: ~2 s (right behind P1) → up to 7 s (half-lap back).
-                    let gapBoost = 2.5;
-                    if (leader && car !== leader) {
-                        const gap = Math.max(0, leader.totalProgress - car.totalProgress);
-                        gapBoost = Math.min(7.0, 2.0 + gap * 5.5);
-                    }
-                    car.boostTimer = Math.max(car.boostTimer, gapBoost);
-                    Effects.addSparks(car.x, car.y, 8);
+            // ── Cooldown after being collected ──
+            if (!pad.active) {
+                pad.cooldownTimer -= dt;
+                if (pad.cooldownTimer <= 0) { pad.active = true; pad.cooldownTimer = 0; }
+                pad.inDeadZone = false;
+                continue;
+            }
 
+            // ── Dead-zone check: is this pad in the empty part of the track? ──
+            pad.inDeadZone = _isInDeadZone(pad.trackProgress, leaderFrac, lastFrac);
+
+            // Pads in the racing zone show as grey but cannot be collected
+            if (!pad.inDeadZone) continue;
+
+            // ── Collision — leader is explicitly excluded ──
+            for (const car of cars) {
+                if (car === leader) continue; // leader can NEVER collect a boost
+                const dx = car.x - pad.x, dy = car.y - pad.y;
+                if (dx * dx + dy * dy <= BOOST_PAD_RADIUS * BOOST_PAD_RADIUS) {
+                    const gap = Math.max(0, leader.totalProgress - car.totalProgress);
+                    car.boostTimer = Math.max(car.boostTimer, Math.min(7.0, 2.0 + gap * 5.5));
+                    Effects.addSparks(car.x, car.y, 8);
                     pad.active = false;
                     pad.cooldownTimer = PAD_COOLDOWN;
                     break;
@@ -285,9 +294,23 @@ const PowerUps = (() => {
         }
     }
 
+    /** Shared arrow path — call after translate/rotate. */
+    function _arrowPath(ctx) {
+        ctx.beginPath();
+        ctx.moveTo( 14,   0);
+        ctx.lineTo(  2,  10);
+        ctx.lineTo(  2,   5);
+        ctx.lineTo(-14,   5);
+        ctx.lineTo(-14,  -5);
+        ctx.lineTo(  2,  -5);
+        ctx.lineTo(  2, -10);
+        ctx.closePath();
+    }
+
     /**
-     * Draw glowing golden arrow boost pads with a pulsing animation.
-     * Only active pads are drawn.
+     * Draw boost pads.
+     * - Golden + glowing  → in the dead zone (collectable by non-leader cars)
+     * - Grey + dim        → in the racing zone (not collectable, just visible)
      */
     function _drawBoostPads(ctx) {
         const now = Date.now();
@@ -295,54 +318,47 @@ const PowerUps = (() => {
         for (const pad of boostPads) {
             if (!pad.leaderPassed || !pad.active) continue;
 
-            // Pulse: oscillate glow intensity and slight scale using a sine wave.
-            const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + pad.x * 0.01);
-            const glowRadius = 18 + pulse * 12;
-            const baseAlpha  = 0.55 + pulse * 0.45;
-
             ctx.save();
             ctx.translate(pad.x, pad.y);
             ctx.rotate(pad.angle);
 
-            // --- Outer glow halo ---
+            if (!pad.inDeadZone) {
+                // ── Grey / dormant (racing zone) ──
+                ctx.globalAlpha = 0.30;
+                _arrowPath(ctx);
+                ctx.fillStyle = '#aaaaaa';
+                ctx.fill();
+                ctx.strokeStyle = '#cccccc';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.restore();
+                continue;
+            }
+
+            // ── Golden / active (dead zone) ──
+            const pulse = 0.5 + 0.5 * Math.sin(now * 0.004 + pad.x * 0.01);
+            const glowRadius = 18 + pulse * 12;
+            const baseAlpha  = 0.55 + pulse * 0.45;
+
+            // Outer glow halo
             const halo = ctx.createRadialGradient(0, 0, 2, 0, 0, glowRadius);
             halo.addColorStop(0,   `rgba(255, 220, 40, ${(baseAlpha * 0.6).toFixed(3)})`);
             halo.addColorStop(0.5, `rgba(255, 180, 0,  ${(baseAlpha * 0.25).toFixed(3)})`);
             halo.addColorStop(1,   'rgba(255, 160, 0, 0)');
-
             ctx.beginPath();
             ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
             ctx.fillStyle = halo;
             ctx.fill();
 
-            // --- Arrow body ---
-            // The arrow points in the direction of track travel (+x after rotation).
+            // Arrow body
             ctx.globalAlpha = baseAlpha;
-            ctx.shadowColor  = '#ffd700';
-            ctx.shadowBlur   = 8 + pulse * 8;
-
-            ctx.beginPath();
-            // Arrowhead tip at front (+x), tail at back (-x).
-            // Body: a chevron / arrow shape.
-            const tipX   =  14;
-            const tailX  = -14;
-            const bodyW  =  5;   // half-height of shaft
-            const headW  =  10;  // half-height of arrowhead base
-            const neckX  =  2;   // x position where shaft meets arrowhead base
-
-            ctx.moveTo(tipX,   0);          // tip
-            ctx.lineTo(neckX,  headW);      // right side of head
-            ctx.lineTo(neckX,  bodyW);      // step inward to shaft
-            ctx.lineTo(tailX,  bodyW);      // back right of shaft
-            ctx.lineTo(tailX, -bodyW);      // back left of shaft
-            ctx.lineTo(neckX, -bodyW);      // step inward to shaft (left)
-            ctx.lineTo(neckX, -headW);      // left side of head
-            ctx.closePath();
-
+            ctx.shadowColor = '#ffd700';
+            ctx.shadowBlur  = 8 + pulse * 8;
+            _arrowPath(ctx);
             ctx.fillStyle = '#ffd700';
             ctx.fill();
 
-            // Inner highlight stripe for depth.
+            // Inner highlight
             ctx.globalAlpha = baseAlpha * 0.5;
             ctx.strokeStyle = '#fff8aa';
             ctx.lineWidth = 1.5;
