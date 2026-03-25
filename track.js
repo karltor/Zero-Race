@@ -7,6 +7,7 @@ const Track = (() => {
     let trackWidth = 150;
     let finishIndex = 0;
     let totalLength = 0;
+    let _debugCtrl = [];   // last control polygon for visual overlay
 
     function generate(w, h) {
         const cx = w / 2;
@@ -14,6 +15,8 @@ const Track = (() => {
         const margin = 35;
         const rx = (w - margin * 2) / 2;
         const ry = (h - margin * 2) / 2;
+
+        console.log(`[track] canvas ${w}x${h}  rx=${rx.toFixed(0)} ry=${ry.toFixed(0)}`);
 
         let validAttempt = -1;
         for (let attempt = 0; attempt < 14; attempt++) {
@@ -27,6 +30,11 @@ const Track = (() => {
                     y: cy + Math.sin(angle) * ry * rVar
                 });
             }
+
+            // Log the rVar spread to see how wild the radii are
+            const radii = ctrl.map(p => Math.sqrt((p.x-cx)**2/(rx**2) + (p.y-cy)**2/(ry**2)));
+            const rMin = Math.min(...radii).toFixed(2), rMax = Math.max(...radii).toFixed(2);
+            console.log(`[track] attempt ${attempt+1}/14  numCtrl=${numCtrl}  rMin=${rMin} rMax=${rMax}`);
 
             // Only enforce ADJACENT pairs (110 px minimum).
             for (let iter = 0; iter < 6; iter++) {
@@ -45,25 +53,30 @@ const Track = (() => {
                 }
             }
 
+            _debugCtrl = ctrl.map(p => ({ ...p }));  // store for overlay
+
             // Reject immediately if the control polygon itself self-intersects.
-            // A self-intersecting polygon always produces a self-intersecting spline.
-            if (!_isCtrlPolygonValid(ctrl)) {
-                console.log(`[track] attempt ${attempt + 1}/14 ctrl polygon self-intersects — retrying`);
+            const ctrlCross = _findCtrlCross(ctrl);
+            if (ctrlCross) {
+                console.log(`[track] attempt ${attempt+1}/14 CTRL POLYGON crosses: seg ${ctrlCross.i}→${ctrlCross.i+1} X seg ${ctrlCross.j}→${ctrlCross.j+1} — retrying`);
                 continue;
             }
 
             points = catmullRomChain(ctrl, 50);
             computeLength();
 
-            if (_isTrackValid()) {
+            // Check spline edge validity and report first crossing found
+            const edgeCross = _findEdgeCross();
+            if (!edgeCross) {
                 validAttempt = attempt;
                 break;
             }
-            console.log(`[track] attempt ${attempt + 1}/14 invalid — retrying`);
+            const frac = (edgeCross.i / points.length * 100).toFixed(1);
+            console.log(`[track] attempt ${attempt+1}/14 SPLINE edge crosses: side=${edgeCross.sign>0?'+':'-'}  seg[${edgeCross.i}] X seg[${edgeCross.j}]  (~${frac}% around track) — retrying`);
         }
 
         if (validAttempt < 0) {
-            console.warn('[track] all 14 attempts invalid — using last generated track');
+            console.warn('[track] all 14 attempts invalid — using last generated track (see debug overlay)');
         } else {
             console.log(`[track] valid track on attempt ${validAttempt + 1}`);
         }
@@ -72,27 +85,59 @@ const Track = (() => {
         return points;
     }
 
-    /** Returns true if the control polygon has no self-intersections.
-     *  Called before spline generation as a fast early-exit check.
-     */
-    function _isCtrlPolygonValid(ctrl) {
+    /** Debug overlay: draws the control polygon and numbered control points. */
+    function drawDebug(ctx) {
+        if (!_debugCtrl.length) return;
+        const n = _debugCtrl.length;
+
+        // Draw control polygon
+        ctx.save();
+        ctx.setLineDash([8, 6]);
+        ctx.strokeStyle = 'rgba(255,255,0,0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(_debugCtrl[0].x, _debugCtrl[0].y);
+        for (let i = 1; i < n; i++) ctx.lineTo(_debugCtrl[i].x, _debugCtrl[i].y);
+        ctx.closePath();
+        ctx.stroke();
+
+        // Draw each control point as a labelled circle
+        for (let i = 0; i < n; i++) {
+            const p = _debugCtrl[i];
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 80, 80, 0.9)';
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([]);
+            ctx.stroke();
+
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 11px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(i, p.x, p.y);
+        }
+        ctx.restore();
+    }
+
+    /** Returns null if control polygon is valid, or {i,j} of first crossing segments. */
+    function _findCtrlCross(ctrl) {
         const n = ctrl.length;
         for (let i = 0; i < n; i++) {
             const a = ctrl[i], b = ctrl[(i + 1) % n];
-            // Check against all non-adjacent segments (skip i-1, i, i+1)
             for (let k = 2; k < n - 1; k++) {
-                const c = ctrl[(i + k) % n], d = ctrl[(i + k + 1) % n];
-                if (_segIntersect(a, b, c, d)) return false;
+                const j = (i + k) % n;
+                const c = ctrl[j], d = ctrl[(j + 1) % n];
+                if (_segIntersect(a, b, c, d)) return { i, j };
             }
         }
-        return true;
+        return null;
     }
 
-    /** Returns true only if neither track edge line self-intersects anywhere.
-     *  Checks every edge segment against ALL non-adjacent segments (up to n/2
-     *  away) to catch global self-intersections, not just local ones.
-     */
-    function _isTrackValid() {
+    /** Returns null if spline edges are valid, or {sign,i,j} of first crossing. */
+    function _findEdgeCross() {
         const n   = points.length;
         const hw  = trackWidth / 2;
         const maxK = Math.floor(n / 2);
@@ -109,13 +154,16 @@ const Track = (() => {
             for (let i = 0; i < n; i++) {
                 const a = edge[i], b = edge[(i + 1) % n];
                 for (let k = 2; k <= maxK; k++) {
-                    const c = edge[(i + k) % n], d = edge[(i + k + 1) % n];
-                    if (_segIntersect(a, b, c, d)) return false;
+                    const j = (i + k) % n;
+                    const c = edge[j], d = edge[(j + 1) % n];
+                    if (_segIntersect(a, b, c, d)) return { sign, i, j };
                 }
             }
         }
-        return true;
+        return null;
     }
+
+    function _isTrackValid()    { return _findEdgeCross() === null; }
 
     function _segIntersect(p1, p2, p3, p4) {
         const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
@@ -409,7 +457,7 @@ const Track = (() => {
     function getPointCount() { return points.length; }
 
     return {
-        generate, draw, getPositionAt, getTrackLength,
+        generate, draw, drawDebug, getPositionAt, getTrackLength,
         getPoints, getWidth, angleAt, normalAt, curvatureAt,
         closestPoint, getPointCount
     };
