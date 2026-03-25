@@ -8,6 +8,7 @@
 
     let lastTimestamp = 0;
     let trackImage = null;
+    let _loopRunning = false;
 
     function resize() {
         const container = canvas.parentElement;
@@ -15,22 +16,38 @@
         canvas.height = container.clientHeight;
     }
 
-    function initRace() {
-        resize();
-        Track.generate(canvas.width, canvas.height);
-        Effects.init(canvas.width, canvas.height);
-        Race.init();
-
-        // Pre-render static track
+    function rebuildTrackImage() {
         trackImage = document.createElement('canvas');
         trackImage.width = canvas.width;
         trackImage.height = canvas.height;
         const offCtx = trackImage.getContext('2d');
         drawBackground(offCtx);
         Track.draw(offCtx);
+    }
 
-        lastTimestamp = 0;
-        requestAnimationFrame(gameLoop);
+    function initRace(regen = true) {
+        resize();
+        if (regen) Track.generate(canvas.width, canvas.height);
+        Effects.init(canvas.width, canvas.height);
+        Race.init();
+        rebuildTrackImage();
+
+        if (!_loopRunning) {
+            _loopRunning = true;
+            lastTimestamp = 0;
+            requestAnimationFrame(gameLoop);
+        } else {
+            lastTimestamp = 0;
+        }
+    }
+
+    // Initialise editor after first track is generated
+    function _initEditor() {
+        Editor.init(canvas, {
+            onRebuildTrack: () => { rebuildTrackImage(); },
+            onRestartRace:  () => { initRace(false); },
+            onNewTrack:     () => { initRace(true);  },
+        });
     }
 
     function drawBackground(c) {
@@ -89,31 +106,28 @@
         const dt = Math.min(timestamp - lastTimestamp, 50);
         lastTimestamp = timestamp;
 
-        Race.update(dt);
+        if (!Editor.isPaused()) Race.update(dt);
+        Editor.update(dt);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         if (trackImage) ctx.drawImage(trackImage, 0, 0);
 
-        Track.drawDebug(ctx);  // DEBUG: show control polygon + numbered points
+        Editor.draw(ctx);   // ctrl-point overlay + panel (drawn before race sprites)
         Race.draw(ctx);
         Sidebar.update(timestamp);
 
         requestAnimationFrame(gameLoop);
     }
 
-    btnRestart.addEventListener('click', initRace);
+    btnRestart.addEventListener('click', () => initRace(true));
 
     window.addEventListener('resize', () => {
         resize();
-        trackImage = document.createElement('canvas');
-        trackImage.width = canvas.width;
-        trackImage.height = canvas.height;
-        const offCtx = trackImage.getContext('2d');
-        drawBackground(offCtx);
-        Track.draw(offCtx);
+        rebuildTrackImage();
         Effects.init(canvas.width, canvas.height);
     });
 
-    initRace();
+    initRace(true);
+    _initEditor();
 })();

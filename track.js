@@ -7,7 +7,8 @@ const Track = (() => {
     let trackWidth = 150;
     let finishIndex = 0;
     let totalLength = 0;
-    let _debugCtrl = [];   // last control polygon for visual overlay
+    let _rawCtrl   = [];   // original control points before Chaikin (editable by editor)
+    let _debugCtrl = [];   // Chaikin-smoothed control polygon (for reference overlay)
 
     function generate(w, h) {
         const cx = w / 2;
@@ -62,6 +63,8 @@ const Track = (() => {
                 continue;
             }
 
+            _rawCtrl = ctrl.map(p => ({ ...p }));  // save pre-Chaikin pts for editor
+
             // Apply 2 passes of Chaikin's corner-cutting algorithm.
             // Replaces every edge with two new points at 25% and 75%, rounding
             // all sharp vertices. After 2 passes, all angles are guaranteed ≥ 135°,
@@ -105,41 +108,73 @@ const Track = (() => {
         return points;
     }
 
-    /** Debug overlay: draws the control polygon and numbered control points. */
-    function drawDebug(ctx) {
-        if (!_debugCtrl.length) return;
-        const n = _debugCtrl.length;
+    /** Debug/editor overlay — draws the raw (pre-Chaikin) control polygon.
+     *  editMode = true: larger yellow circles with drag-cursor affordance.
+     */
+    function drawDebug(ctx, editMode = false) {
+        if (!_rawCtrl.length) return;
+        const n = _rawCtrl.length;
 
-        // Draw control polygon
+        // Control polygon (dashed line connecting raw ctrl pts)
         ctx.save();
         ctx.setLineDash([8, 6]);
-        ctx.strokeStyle = 'rgba(255,255,0,0.7)';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(255,255,0,0.55)';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(_debugCtrl[0].x, _debugCtrl[0].y);
-        for (let i = 1; i < n; i++) ctx.lineTo(_debugCtrl[i].x, _debugCtrl[i].y);
+        ctx.moveTo(_rawCtrl[0].x, _rawCtrl[0].y);
+        for (let i = 1; i < n; i++) ctx.lineTo(_rawCtrl[i].x, _rawCtrl[i].y);
         ctx.closePath();
         ctx.stroke();
 
-        // Draw each control point as a labelled circle
+        // Ctrl points
+        const r = editMode ? 14 : 9;
         for (let i = 0; i < n; i++) {
-            const p = _debugCtrl[i];
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255, 80, 80, 0.9)';
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
+            const p = _rawCtrl[i];
             ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = editMode ? 'rgba(255,200,0,0.92)' : 'rgba(255,80,80,0.88)';
+            ctx.fill();
+            ctx.strokeStyle = editMode ? '#fff' : 'rgba(255,255,255,0.7)';
+            ctx.lineWidth = editMode ? 2 : 1.5;
             ctx.stroke();
-
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 11px monospace';
+            ctx.fillStyle = editMode ? '#000' : '#fff';
+            ctx.font = `bold ${editMode ? 12 : 10}px monospace`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(i, p.x, p.y);
         }
         ctx.restore();
+    }
+
+    // ── Editor API ────────────────────────────────────────────────────────
+    /** Returns the raw (pre-Chaikin) control point array. */
+    function getCtrlPoints() { return _rawCtrl; }
+
+    /** Move a single raw control point and store the new position. */
+    function setCtrlPoint(i, x, y) {
+        if (_rawCtrl[i]) { _rawCtrl[i].x = x; _rawCtrl[i].y = y; }
+    }
+
+    /** Re-apply Chaikin smoothing to _rawCtrl and rebuild the spline.
+     *  Call after any setCtrlPoint() change to update the track geometry.
+     */
+    function rebuildFromCtrl() {
+        const ctrl = _rawCtrl.map(p => ({ ...p }));
+        for (let pass = 0; pass < 2; pass++) {
+            const smooth = [];
+            const nc = ctrl.length;
+            for (let i = 0; i < nc; i++) {
+                const a = ctrl[i], b = ctrl[(i + 1) % nc];
+                smooth.push({ x: a.x + 0.25*(b.x-a.x), y: a.y + 0.25*(b.y-a.y) });
+                smooth.push({ x: a.x + 0.75*(b.x-a.x), y: a.y + 0.75*(b.y-a.y) });
+            }
+            ctrl.length = 0;
+            smooth.forEach(p => ctrl.push(p));
+        }
+        _debugCtrl = ctrl.map(p => ({ ...p }));
+        points = catmullRomChain(ctrl, 15);
+        computeLength();
     }
 
     /** Returns null if control polygon is valid, or {i,j} of first crossing segments. */
@@ -479,6 +514,7 @@ const Track = (() => {
     return {
         generate, draw, drawDebug, getPositionAt, getTrackLength,
         getPoints, getWidth, angleAt, normalAt, curvatureAt,
-        closestPoint, getPointCount
+        closestPoint, getPointCount,
+        getCtrlPoints, setCtrlPoint, rebuildFromCtrl
     };
 })();
