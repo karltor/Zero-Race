@@ -23,6 +23,7 @@ const Race = (() => {
     let leader = null;
     let finishOrder = [];
     let speedMultiplier = 1;
+    let _endScreenTimer = -1;  // ms elapsed after all cars finished; -1 = not started
 
     // -------------------------------------------------------------------------
     // Init
@@ -35,6 +36,7 @@ const Race = (() => {
         qualifyingResults = [];
         finishOrder = [];
         leader = null;
+        _endScreenTimer = -1;
 
         PowerUps.init();
 
@@ -70,6 +72,7 @@ const Race = (() => {
         if (phase === 'transition')    { _updateTransition(adt);    return; }
         if (phase === 'race_countdown'){ _updateRaceCountdown(adt); return; }
         if (phase === 'race')          { _updateRace(adt);          return; }
+        if (phase === 'race_end')      { phaseTimer += adt;         return; }
     }
 
     function _updateQualifying(adt) {
@@ -168,12 +171,43 @@ const Race = (() => {
         for (let i = 0; i < sorted.length; i++) sorted[i].position = i + 1;
         leader = sorted[0];
 
+        // --- OVERTAKE TRACKING ---
+        for (const car of cars) {
+            car._overtakeCooldown = Math.max(0, (car._overtakeCooldown || 0) - dtSec);
+            if (car._prevPosition > 0 && car.position < car._prevPosition && car._overtakeCooldown <= 0) {
+                car.overtakes = (car.overtakes || 0) + 1;
+                car._overtakeCooldown = 4.0;
+            }
+            car._prevPosition = car.position;
+        }
+
         PowerUps.update(dtSec, cars, leader);
 
         for (const car of cars) {
             if (car.lap >= TOTAL_LAPS && !finishOrder.includes(car)) {
                 finishOrder.push(car);
+                car._finishedRace     = true;
+                car._finishFadeDelay  = 2000;
+                car._finishAlpha      = 1.0;
             }
+        }
+
+        // --- FINISH FADE ---
+        for (const car of cars) {
+            if (car._finishedRace) {
+                if (car._finishFadeDelay > 0) {
+                    car._finishFadeDelay -= adt;
+                } else {
+                    car._finishAlpha = Math.max(0, car._finishAlpha - adt / 1200);
+                }
+            }
+        }
+
+        // --- END-SCREEN TRIGGER ---
+        if (finishOrder.length === cars.length) {
+            if (_endScreenTimer < 0) _endScreenTimer = 0;
+            _endScreenTimer += adt;
+            if (_endScreenTimer > 4500) phase = 'race_end';
         }
     }
 
@@ -202,8 +236,8 @@ const Race = (() => {
             _drawTransition(ctx, W, H, cx, cy);
         } else if (phase === 'race_countdown') {
             _drawCountdown(ctx, W, H, cx, cy, phaseTimer, 'RACE START', '#ff4444');
-        } else if (phase === 'race' && finishOrder.length === cars.length) {
-            _drawFinished(ctx, W, H, cx);
+        } else if (phase === 'race_end') {
+            _drawEndScreen(ctx, W, H, cx, cy);
         }
     }
 
@@ -382,21 +416,153 @@ const Race = (() => {
         ctx.restore();
     }
 
-    function _drawFinished(ctx, W, H, cx) {
-        const cy = 50;
+    function _drawEndScreen(ctx, W, H, cx, cy) {
         ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,0.75)';
-        ctx.fillRect(cx - 160, cy - 28, 320, 56);
-        ctx.strokeStyle = '#ffd700';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(cx - 160, cy - 28, 320, 56);
-        ctx.fillStyle = '#ffd700';
-        ctx.font = 'bold 26px Arial';
+
+        // Full dark overlay
+        ctx.fillStyle = 'rgba(4, 6, 22, 0.93)';
+        ctx.fillRect(0, 0, W, H);
+
+        const fadeIn = Math.min(1, phaseTimer / 600);
+        ctx.globalAlpha = fadeIn;
+
+        // ── TITLE ──
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        const winner = finishOrder[0];
-        ctx.fillText(`WINNER: ${winner.name}`, cx, cy);
+        ctx.shadowColor = '#ffd700';
+        ctx.shadowBlur = 30;
+        ctx.fillStyle = '#ffd700';
+        ctx.font = 'bold 42px Arial';
+        ctx.fillText('RACE COMPLETE', cx, 54);
+        ctx.shadowBlur = 0;
+
+        // ── PODIUM (top 3) ──
+        const podiumOrder = [1, 0, 2];  // draw P2, P1, P3 for visual height effect
+        const podiumX     = [cx - 130, cx, cx + 130];
+        const podiumBases = [cy - 40, cy - 80, cy - 20];  // P2 lower than P1, P3 lowest
+        const podiumH     = [90, 130, 70];
+        const medalColors = ['#C0C0C0', '#FFD700', '#CD7F32'];
+        const podiumLabels = ['2ND', '1ST', '3RD'];
+
+        for (let vi = 0; vi < 3; vi++) {
+            const ri = podiumOrder[vi];
+            if (ri >= finishOrder.length) continue;
+            const car = finishOrder[ri];
+            const px  = podiumX[vi];
+            const base = podiumBases[vi] + cy - 50;
+            const ph  = podiumH[vi];
+            const col = CarSVG.TEAM_COLORS[car.team].light;
+            const medal = medalColors[vi];
+
+            // Podium block
+            ctx.fillStyle = vi === 1 ? 'rgba(255,215,0,0.18)' : 'rgba(255,255,255,0.06)';
+            ctx.fillRect(px - 50, base, 100, ph);
+            ctx.strokeStyle = vi === 1 ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.15)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(px - 50, base, 100, ph);
+
+            // Medal circle
+            ctx.beginPath();
+            ctx.arc(px, base - 22, 16, 0, Math.PI * 2);
+            ctx.fillStyle = medal;
+            ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 13px Arial';
+            ctx.fillText(podiumLabels[vi], px, base - 22);
+
+            // Car colour bar
+            ctx.fillStyle = col;
+            ctx.fillRect(px - 50, base, 5, ph);
+
+            // Car name
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${vi === 1 ? 14 : 12}px Arial`;
+            ctx.fillText(car.name, px + 5, base + ph * 0.45);
+
+            // Best lap
+            if (car.bestLapTime < Infinity) {
+                ctx.fillStyle = 'rgba(200,230,255,0.75)';
+                ctx.font = '11px monospace';
+                ctx.fillText(_formatTime(car.bestLapTime), px + 5, base + ph * 0.72);
+            }
+        }
+
+        // ── FULL STANDINGS (right column) ──
+        const listX = cx + 230, listTop = 100;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.font = 'bold 11px Arial';
+        ctx.fillText('FINAL STANDINGS', listX, listTop - 14);
+
+        for (let i = 0; i < finishOrder.length; i++) {
+            const car = finishOrder[i];
+            const ry = listTop + i * 36;
+            const col = CarSVG.TEAM_COLORS[car.team].light;
+
+            ctx.fillStyle = i < 3 ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+            ctx.fillRect(listX - 4, ry - 10, 200, 30);
+
+            ctx.fillStyle = col;
+            ctx.fillRect(listX - 4, ry - 10, 4, 30);
+
+            ctx.fillStyle = i === 0 ? '#FFD700' : 'rgba(255,255,255,0.5)';
+            ctx.font = 'bold 12px Arial';
+            ctx.fillText(`P${i + 1}`, listX + 6, ry + 5);
+
+            ctx.fillStyle = i < 3 ? '#fff' : 'rgba(255,255,255,0.75)';
+            ctx.font = `${i < 3 ? 'bold ' : ''}12px Arial`;
+            ctx.fillText(car.name, listX + 32, ry + 5);
+        }
+
+        // ── STATS (left column) ──
+        const statsX = cx - W * 0.38, statsTop = cy + 110;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.font = 'bold 11px Arial';
+        ctx.fillText('RACE STATS', statsX, statsTop - 14);
+
+        // Fastest lap
+        const flCar = [...cars].filter(c => c.bestLapTime < Infinity)
+                               .sort((a,b) => a.bestLapTime - b.bestLapTime)[0];
+        if (flCar) {
+            _drawStatRow(ctx, statsX, statsTop,      '⚡ FASTEST LAP',
+                `${flCar.name}`, _formatTime(flCar.bestLapTime), CarSVG.TEAM_COLORS[flCar.team].light);
+        }
+
+        // Most boosters by team
+        const teamBoosters = {};
+        for (const car of cars) {
+            teamBoosters[car.team] = (teamBoosters[car.team] || 0) + (car.boostersCollected || 0);
+        }
+        const topTeamEntry = Object.entries(teamBoosters).sort((a,b) => b[1]-a[1])[0];
+        if (topTeamEntry && topTeamEntry[1] > 0) {
+            const [topTeam, topCount] = topTeamEntry;
+            _drawStatRow(ctx, statsX, statsTop + 44, '🟡 MOST BOOSTERS',
+                `${topTeam.charAt(0).toUpperCase()+topTeam.slice(1)} team`, `${topCount} pads`,
+                CarSVG.TEAM_COLORS[topTeam].light);
+        }
+
+        // Most overtakes
+        const topPasser = [...cars].sort((a,b) => (b.overtakes||0)-(a.overtakes||0))[0];
+        if (topPasser && topPasser.overtakes > 0) {
+            _drawStatRow(ctx, statsX, statsTop + 88, '🏎 MOST OVERTAKES',
+                topPasser.name, `${topPasser.overtakes} passes`, CarSVG.TEAM_COLORS[topPasser.team].light);
+        }
+
         ctx.restore();
+    }
+
+    function _drawStatRow(ctx, x, y, label, name, value, accentColor) {
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fillRect(x - 4, y - 10, 210, 36);
+        ctx.fillStyle = accentColor;
+        ctx.fillRect(x - 4, y - 10, 4, 36);
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.font = 'bold 10px Arial';
+        ctx.fillText(label, x + 6, y + 2);
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px Arial';
+        ctx.fillText(`${name}  —  ${value}`, x + 6, y + 17);
     }
 
     // -------------------------------------------------------------------------
@@ -443,7 +609,7 @@ const Race = (() => {
     function getLeader()         { return leader; }
     function getRaceTime()       { return phaseTimer; }
     function isStarted()         { return phase === 'race' || phase === 'qualifying'; }
-    function isFinished()        { return phase === 'race' && finishOrder.length === cars.length; }
+    function isFinished()        { return (phase === 'race' || phase === 'race_end') && finishOrder.length === cars.length; }
     function getTotalLaps()      { return TOTAL_LAPS; }
     function getSpeedMultiplier(){ return speedMultiplier; }
     function getPhase()          { return phase; }

@@ -163,6 +163,7 @@ const PowerUps = (() => {
                 if (dx * dx + dy * dy <= BOOST_PAD_RADIUS * BOOST_PAD_RADIUS) {
                     const gap = Math.max(0, leader.totalProgress - car.totalProgress);
                     car.boostTimer = Math.max(car.boostTimer, Math.min(7.0, 2.0 + gap * 5.5));
+                    car.boostersCollected = (car.boostersCollected || 0) + 1;
                     Effects.addSparks(car.x, car.y, 8);
                     pad.active = false;
                     pad.cooldownTimer = PAD_COOLDOWN;
