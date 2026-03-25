@@ -45,6 +45,13 @@ const Track = (() => {
                 }
             }
 
+            // Reject immediately if the control polygon itself self-intersects.
+            // A self-intersecting polygon always produces a self-intersecting spline.
+            if (!_isCtrlPolygonValid(ctrl)) {
+                console.log(`[track] attempt ${attempt + 1}/14 ctrl polygon self-intersects — retrying`);
+                continue;
+            }
+
             points = catmullRomChain(ctrl, 50);
             computeLength();
 
@@ -65,14 +72,30 @@ const Track = (() => {
         return points;
     }
 
+    /** Returns true if the control polygon has no self-intersections.
+     *  Called before spline generation as a fast early-exit check.
+     */
+    function _isCtrlPolygonValid(ctrl) {
+        const n = ctrl.length;
+        for (let i = 0; i < n; i++) {
+            const a = ctrl[i], b = ctrl[(i + 1) % n];
+            // Check against all non-adjacent segments (skip i-1, i, i+1)
+            for (let k = 2; k < n - 1; k++) {
+                const c = ctrl[(i + k) % n], d = ctrl[(i + k + 1) % n];
+                if (_segIntersect(a, b, c, d)) return false;
+            }
+        }
+        return true;
+    }
+
     /** Returns true only if neither track edge line self-intersects anywhere.
-     *  This directly tests for the condition that produces visible V-corner crossings.
-     *  We check each edge segment against the next 30 non-adjacent segments — enough
-     *  to catch any tight fold while remaining fast (O(n*60) ≈ 30 k ops).
+     *  Checks every edge segment against ALL non-adjacent segments (up to n/2
+     *  away) to catch global self-intersections, not just local ones.
      */
     function _isTrackValid() {
         const n   = points.length;
         const hw  = trackWidth / 2;
+        const maxK = Math.floor(n / 2);
 
         for (const sign of [1, -1]) {
             const edge = [];
@@ -85,7 +108,7 @@ const Track = (() => {
             }
             for (let i = 0; i < n; i++) {
                 const a = edge[i], b = edge[(i + 1) % n];
-                for (let k = 2; k <= 30; k++) {
+                for (let k = 2; k <= maxK; k++) {
                     const c = edge[(i + k) % n], d = edge[(i + k + 1) % n];
                     if (_segIntersect(a, b, c, d)) return false;
                 }
