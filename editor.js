@@ -6,6 +6,7 @@ const Editor = (() => {
     let _mx = 0, _my = 0;
     let _slide   = 0;      // 0 = hidden, 1 = visible (animated)
     let _pinned  = false;  // latches true once fully open; header-click to dismiss
+    let _dismissed = false;  // true after header-click; prevents re-open until mouse leaves corner
     let _showCtrl = false;
     let _editMode = false;
     let _dragIdx  = -1;
@@ -153,7 +154,11 @@ const Editor = (() => {
             // Panel interactions (when visible)
             if (_slide > 0.4) {
                 const hdrRect = { x: _px(), y: 14, w: PW, h: HDR_H };
-                if (_inRect(x, y, hdrRect)) { _pinned = false; return; }
+                if (_inRect(x, y, hdrRect)) {
+                _pinned = false;
+                _dismissed = true;  // prevent immediate re-open while mouse is still in corner
+                return;
+            }
                 for (let i = 0; i < BTNS.length; i++) {
                     if (_inRect(x, y, _btnRect(i))) { _handleClick(BTNS[i].id); return; }
                 }
@@ -195,8 +200,11 @@ const Editor = (() => {
     // ── update ─────────────────────────────────────────────────────────────
     function update(dt) {
         const d2 = _mx * _mx + _my * _my;
+        const inCorner = d2 < CORNER_R * CORNER_R;
+        // Reset dismissed once mouse fully leaves the trigger area
+        if (_dismissed && !inCorner) _dismissed = false;
         if (!_pinned && _slide > 0.98) _pinned = true;
-        const target = (_pinned || d2 < CORNER_R * CORNER_R) ? 1 : 0;
+        const target = !_dismissed && (_pinned || inCorner) ? 1 : 0;
         _slide += (target - _slide) * Math.min(1, dt / 120);
         _slide  = Math.max(0, Math.min(1, _slide));
     }

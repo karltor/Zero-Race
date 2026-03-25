@@ -100,6 +100,17 @@ class Car {
 
         this.stuckTimer = 0;
         this.lastTrackIdx = 0;
+
+        // Stats tracking (for end screen)
+        this.overtakes        = 0;
+        this.boostersCollected = 0;
+        this._overtakeCooldown = 0;
+        this._prevPosition     = 0;
+
+        // Finish fade
+        this._finishedRace    = false;
+        this._finishAlpha     = 1.0;
+        this._finishFadeDelay = 0;
     }
 
     placeOnTrack(progress, laneOffset) {
@@ -122,6 +133,13 @@ class Car {
         this.oilTimer = 0;
         this.catchupFactor = 0;
         this.stuckTimer = 0;
+        this.overtakes         = 0;
+        this.boostersCollected = 0;
+        this._overtakeCooldown = 0;
+        this._prevPosition     = 0;
+        this._finishedRace     = false;
+        this._finishAlpha      = 1.0;
+        this._finishFadeDelay  = 0;
 
         const pos = Track.getPositionAt(this.progress, laneOffset);
         this.x = pos.x;
@@ -208,7 +226,7 @@ class Car {
         const brakingDecel = 450 * this.stats.braking;
         const brakingPx = (this.speed * this.speed) / (2 * brakingDecel);
         const pxPerPt   = Track.getTrackLength() / n;
-        const brakePts  = Math.max(10, Math.min(85, Math.round(brakingPx / pxPerPt)));
+        const brakePts  = Math.max(12, Math.min(120, Math.round(brakingPx / pxPerPt * 1.5)));
         const nearPts   = Math.max(4,  Math.round(brakePts * 0.2));
 
         const maxCurv = this.maxCurvatureAhead(nearPts, brakePts);
@@ -216,7 +234,7 @@ class Car {
         const isOnStraight = maxCurv < 0.018;
 
         // --- CORNER SPEED ---
-        const cornerSpeed = maxSpeed * Math.max(0.45, 1 - maxCurv * 2.6 / this.stats.cornering);
+        const cornerSpeed = maxSpeed * Math.max(0.32, 1 - maxCurv * 4.2 / this.stats.cornering);
 
         // --- RACING LINE (outside → apex → outside with per-car personality) ---
         // Detect corner phase: approaching (curv increasing) vs apex vs exiting
@@ -283,12 +301,12 @@ class Car {
         this.braking = false;
 
         const speedExcess = this.speed - cornerSpeed;
-        if (speedExcess > 8) {
-            const brakePow = Math.min(0.92, speedExcess / (maxSpeed * 0.28) * this.stats.braking);
+        if (speedExcess > 2) {
+            const brakePow = Math.min(1.0, speedExcess / (maxSpeed * 0.20) * this.stats.braking);
             brake    = brakePow;
             throttle = 0;
             this.braking = true;
-        } else if (speedExcess > -8) {
+        } else if (speedExcess > -4) {
             throttle = 0.12;
         } else {
             throttle = isOnStraight ? 1.0 : Math.min(1.0, 0.5 + (-speedExcess) / (maxSpeed * 0.3));
@@ -611,8 +629,10 @@ class Car {
 
     draw(ctx) {
         if (!this.image || !this.image.complete) return;
+        if (this._finishAlpha <= 0.01) return;
 
         ctx.save();
+        if (this._finishAlpha < 1) ctx.globalAlpha = this._finishAlpha;
         ctx.translate(this.x, this.y);
         ctx.rotate(this.angle);
 
