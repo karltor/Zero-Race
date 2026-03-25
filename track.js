@@ -15,14 +15,12 @@ const Track = (() => {
         const rx = (w - margin * 2) / 2;
         const ry = (h - margin * 2) / 2;
 
-        // Try up to 12 times; regenerate if edge lines would visually self-intersect.
-        for (let attempt = 0; attempt < 12; attempt++) {
+        let validAttempt = -1;
+        for (let attempt = 0; attempt < 14; attempt++) {
             const numCtrl = 8 + Math.floor(Math.random() * 5);
             const ctrl = [];
             for (let i = 0; i < numCtrl; i++) {
                 const angle = (i / numCtrl) * Math.PI * 2;
-                // 0.45–1.0: enough inward range for interesting concave shapes without
-                // making the spline tight enough to produce V-corner self-intersections.
                 const rVar = 0.45 + Math.random() * 0.55;
                 ctrl.push({
                     x: cx + Math.cos(angle) * rx * rVar,
@@ -30,19 +28,19 @@ const Track = (() => {
                 });
             }
 
-            // Only enforce ADJACENT pairs.
-            for (let iter = 0; iter < 5; iter++) {
+            // Only enforce ADJACENT pairs (110 px minimum).
+            for (let iter = 0; iter < 6; iter++) {
                 for (let i = 0; i < ctrl.length; i++) {
                     const next = ctrl[(i + 1) % ctrl.length];
                     const dx = next.x - ctrl[i].x, dy = next.y - ctrl[i].y;
                     const d = Math.sqrt(dx * dx + dy * dy);
-                    if (d < 100) {
+                    if (d < 110) {
                         const mx = (ctrl[i].x + next.x) / 2;
                         const my = (ctrl[i].y + next.y) / 2;
-                        ctrl[i].x += (ctrl[i].x - mx) * 0.35;
-                        ctrl[i].y += (ctrl[i].y - my) * 0.35;
-                        next.x += (next.x - mx) * 0.35;
-                        next.y += (next.y - my) * 0.35;
+                        ctrl[i].x += (ctrl[i].x - mx) * 0.4;
+                        ctrl[i].y += (ctrl[i].y - my) * 0.4;
+                        next.x += (next.x - mx) * 0.4;
+                        next.y += (next.y - my) * 0.4;
                     }
                 }
             }
@@ -50,7 +48,17 @@ const Track = (() => {
             points = catmullRomChain(ctrl, 50);
             computeLength();
 
-            if (_isTrackValid()) break;
+            if (_isTrackValid()) {
+                validAttempt = attempt;
+                break;
+            }
+            console.log(`[track] attempt ${attempt + 1}/14 invalid — retrying`);
+        }
+
+        if (validAttempt < 0) {
+            console.warn('[track] all 14 attempts invalid — using last generated track');
+        } else {
+            console.log(`[track] valid track on attempt ${validAttempt + 1}`);
         }
 
         finishIndex = 0;
@@ -100,21 +108,57 @@ const Track = (() => {
         const result = [];
         const n = ctrl.length;
         for (let i = 0; i < n; i++) {
-            const p0 = ctrl[(i-1+n)%n], p1 = ctrl[i];
-            const p2 = ctrl[(i+1)%n], p3 = ctrl[(i+2)%n];
-            for (let t = 0; t < segPts; t++) {
-                result.push(catmullRom(p0, p1, p2, p3, t / segPts));
+            const p0 = ctrl[(i - 1 + n) % n], p1 = ctrl[i];
+            const p2 = ctrl[(i + 1) % n],     p3 = ctrl[(i + 2) % n];
+            for (let s = 0; s < segPts; s++) {
+                result.push(centripetalCR(p0, p1, p2, p3, s / segPts));
             }
         }
         return result;
     }
 
-    function catmullRom(p0, p1, p2, p3, t) {
-        const t2 = t*t, t3 = t2*t;
-        return {
-            x: 0.5*(2*p1.x+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
-            y: 0.5*(2*p1.y+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3)
-        };
+    /**
+     * Centripetal Catmull-Rom (α = 0.5).
+     *
+     * Unlike uniform CR (α = 0), the centripetal variant parameterises each
+     * segment by √(chord length) rather than a fixed step.  This eliminates
+     * cusps and self-intersections when consecutive control points have very
+     * different spacings — exactly the cause of the V-corner bug.
+     *
+     * Reference: Barry & Goldman (1988), "A recursive evaluation algorithm
+     * for a class of Catmull–Rom splines".
+     */
+    function centripetalCR(p0, p1, p2, p3, t) {
+        // Knot spacing: t_{i+1} - t_i = |P_{i+1} - P_i|^α, α = 0.5
+        function knot(a, b) {
+            const dx = b.x - a.x, dy = b.y - a.y;
+            return Math.pow(dx * dx + dy * dy, 0.25); // (dist²)^0.25 = dist^0.5
+        }
+
+        const t0 = 0;
+        const t1 = t0 + knot(p0, p1);
+        const t2 = t1 + knot(p1, p2);
+        const t3 = t2 + knot(p2, p3);
+
+        // Guard against degenerate (coincident) control points
+        if (Math.abs(t2 - t1) < 1e-8) return { x: p1.x, y: p1.y };
+
+        // Remap input t ∈ [0, 1) to tp ∈ [t1, t2)
+        const tp = t1 + (t2 - t1) * t;
+
+        function lp(a, b, ta, tb, tc) {
+            const d = tb - ta;
+            if (Math.abs(d) < 1e-8) return { x: a.x, y: a.y };
+            const f = (tc - ta) / d;
+            return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+        }
+
+        const A1 = lp(p0, p1, t0, t1, tp);
+        const A2 = lp(p1, p2, t1, t2, tp);
+        const A3 = lp(p2, p3, t2, t3, tp);
+        const B1 = lp(A1, A2, t0, t2, tp);
+        const B2 = lp(A2, A3, t1, t3, tp);
+        return lp(B1, B2, t1, t2, tp);
     }
 
     function computeLength() {
