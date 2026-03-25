@@ -95,6 +95,7 @@
 
         if (trackImage) ctx.drawImage(trackImage, 0, 0);
 
+        Track.drawDebug(ctx);  // DEBUG: show control polygon + numbered points
         Race.draw(ctx);
         Sidebar.update(timestamp);
 
