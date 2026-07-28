@@ -1,622 +1,774 @@
 /**
- * Race management: qualifying lap → fancy grid reveal → real race.
+ * Race — the broadcast layer.
  *
- * Phase flow:
- *   'qual_countdown'  3-second lights before qualifying lap
- *   'qualifying'      1 ghost lap, no collisions, timed for grid order
- *   'transition'      5-second cinematic result screen + grid set
- *   'race_countdown'  3-second lights before real race
- *   'race'            normal race (TOTAL_LAPS)
+ * Owns the show, not the simulation. The flow is:
+ *
+ *   1. generate the circuit from the seed
+ *   2. run the whole race headless (Sim.runHeadless) — a few hundred ms
+ *   3. hand the resulting event log to the commentator, who writes every line
+ *      in advance, with hindsight
+ *   4. re-run the same seed in real time and play the show against it
+ *
+ * Because step 4 is deterministic it lands on exactly the same events at
+ * exactly the same times as step 2.
  */
 const Race = (() => {
-    const TEAMS = ['blue', 'yellow', 'red', 'green'];
-    const CARS_PER_TEAM = 2;
-    const TOTAL_LAPS = 10;
-    const TRANSITION_DURATION = 9500; // ms (5.5s display + 4s extra)
 
-    const TEAM_NUMBERS = { blue: [1, 2], yellow: [3, 4], red: [5, 6], green: [7, 8] };
+    const STEP_MS = 1000 / 60;
 
-    let cars = [];
-    let phase = 'qual_countdown';
-    let phaseTimer = 0;         // ms elapsed in current phase (or ms remaining for countdowns)
-    let qualifyingResults = []; // [{car, lapTime}] sorted fastest-first after qualifying
-    let leader = null;
-    let finishOrder = [];
+    const PHASES = {
+        LOADING:      'loading',
+        PREVIEW:      'preview',
+        QUAL_INTRO:   'qual_intro',
+        QUALIFYING:   'qualifying',
+        QUAL_RESULT:  'qual_result',
+        GRID:         'grid',
+        COUNTDOWN:    'countdown',
+        RACE:         'race',
+        COOLDOWN:     'cooldown',
+        RESULTS:      'results',
+    };
+
+    let sim = null;
+    let preSim = null;           // { result, events, qualifying }
+    let seed = 0;
+    let phase = PHASES.LOADING;
+    let phaseTimer = 0;
+    let accumulator = 0;
+    let eventCursor = 0;
     let speedMultiplier = 1;
-    let _endScreenTimer = -1;  // ms elapsed after all cars finished; -1 = not started
+    let awarded = null;          // Garage breakdown, computed once at the flag
+    let totalLaps = 14;
+    let raceNumber = 1;
+    let onResults = null;
+    let paused = false;
+
+    const PREVIEW_MS   = 5200;
+    const QUAL_INTRO_MS = 2600;
+    const QUAL_RESULT_MS = 8600;
+    const COUNTDOWN_MS = 5200;
+    const COOLDOWN_MS  = 7000;
+    const QUAL_SPEED   = 3.0;
 
     // -------------------------------------------------------------------------
-    // Init
+    // Setup
     // -------------------------------------------------------------------------
 
-    function init() {
-        cars = [];
-        phase = 'qual_countdown';
-        phaseTimer = 3000;
-        qualifyingResults = [];
-        finishOrder = [];
-        leader = null;
-        _endScreenTimer = -1;
+    /**
+     * @param {number} newSeed
+     * @param {object} opts { worldW, worldH, totalLaps, onTrackReady, onResults }
+     */
+    function init(newSeed, opts = {}) {
+        seed = newSeed >>> 0;
+        totalLaps = opts.totalLaps || totalLaps;
+        raceNumber = Garage.getRaceNumber();
+        onResults = opts.onResults || null;
+        awarded = null;
 
-        PowerUps.init();
+        // 1. Circuit — its own stream so changing lap count never changes the layout.
+        Track.generate(opts.worldW, opts.worldH, Rng.create((seed ^ 0x5f3a7c11) >>> 0));
+        if (opts.onTrackReady) opts.onTrackReady();
+        Hud.reset();
 
-        // All 8 cars start at the exact same spot — ghost lap will spread them out
-        for (const team of TEAMS) {
-            for (const num of TEAM_NUMBERS[team]) {
-                const car = new Car(team, num);
-                car.placeOnTrack(1.0, 0);
-                car.qualifyingDone = false;
-                car.qualifyingTime = null;
-                cars.push(car);
-            }
-        }
+        // 2. Headless pre-simulation — the whole race, before we draw a frame.
+        const mods = Garage.snapshotModifiers();
+        Effects.setEnabled(false);
+        preSim = Sim.runHeadless(seed, { totalLaps, mods });
+        Effects.setEnabled(true);
+        console.log(`[zero-race] pre-simulated ${preSim.steps} steps in ${preSim.elapsedMs.toFixed(0)} ms — ` +
+                    `${preSim.events.length} events, winner ${preSim.result.standings[0].name}`);
+
+        // 3. Write the commentary from the finished story.
+        Commentary.load(preSim.events, {
+            seed, trackName: Track.getName(), totalLaps,
+            duration: preSim.result.duration,
+        });
+        Commentary.setLiveProvider(getLive);
+
+        // 4. The live run.
+        sim = Sim.create(seed, { totalLaps, mods, effects: true });
+
+        phase = PHASES.PREVIEW;
+        phaseTimer = 0;
+        accumulator = 0;
+        eventCursor = 0;
     }
 
     // -------------------------------------------------------------------------
     // Update
     // -------------------------------------------------------------------------
 
-    function update(dt) {
-        const adt = dt * speedMultiplier; // adjusted dt (ms)
+    function update(dtMs) {
+        const dt = dtMs / 1000;
+        if (!sim) return;
 
-        if (phase === 'qual_countdown') {
-            phaseTimer -= adt;
-            if (phaseTimer <= 0) {
-                phase = 'qualifying';
-                phaseTimer = 0;
-            }
+        // While paused the show stops but the camera keeps easing, so the
+        // frozen frame still looks like a broadcast rather than a crash.
+        if (paused) {
+            Effects.update(dt);
+            Camera.update(dt, {
+                order: sim.state.order || sim.cars, cars: sim.cars,
+                phase: 'other', safetyCar: sim.state.safetyCar, leader: sim.state.leader,
+                wide: Camera.getMode() === 'wide',
+            });
             return;
         }
 
-        if (phase === 'qualifying')    { _updateQualifying(adt);    return; }
-        if (phase === 'transition')    { _updateTransition(adt);    return; }
-        if (phase === 'race_countdown'){ _updateRaceCountdown(adt); return; }
-        if (phase === 'race')          { _updateRace(adt);          return; }
-        if (phase === 'race_end')      { phaseTimer += adt;         return; }
-    }
+        phaseTimer += dtMs;
 
-    function _updateQualifying(adt) {
-        phaseTimer += adt;
-        const dtSec = adt / 1000;
+        switch (phase) {
+            case PHASES.PREVIEW:
+                Camera.goWide();
+                if (phaseTimer > PREVIEW_MS) _to(PHASES.QUAL_INTRO);
+                break;
 
-        Effects.update(dtSec);
-
-        for (const car of cars) {
-            if (!car.qualifyingDone) {
-                // noCollisions = true → ghost lap, no pushing
-                car.update(dtSec, cars, phaseTimer, phaseTimer, true);
-            }
-        }
-
-        // Assign live positions so AI and powerups still work
-        const active = cars.filter(c => !c.qualifyingDone);
-        active.sort((a, b) => b.totalProgress - a.totalProgress);
-        for (let i = 0; i < active.length; i++) active[i].position = i + 1;
-        leader = active[0] || cars[0];
-
-        // No power-ups during qualifying — pure time trial
-
-        // Detect qualifying lap completions
-        for (const car of cars) {
-            if (!car.qualifyingDone && car.lap >= 1) {
-                car.qualifyingDone = true;
-                car.qualifyingTime = car.lastLapTime;
-                qualifyingResults.push({ car, lapTime: car.lastLapTime });
-            }
-        }
-
-        // All done or 90-second safety timeout
-        if (cars.every(c => c.qualifyingDone) || phaseTimer > 90000) {
-            _finaliseQualifying();
-        }
-    }
-
-    function _finaliseQualifying() {
-        // Sort fastest → slowest. DNF cars go to the back.
-        qualifyingResults.sort((a, b) => (a.lapTime || Infinity) - (b.lapTime || Infinity));
-        const doneSet = new Set(qualifyingResults.map(r => r.car));
-        for (const car of cars) {
-            if (!doneSet.has(car)) qualifyingResults.push({ car, lapTime: null });
-        }
-        // Assign qualifying positions (P1 = pole)
-        for (let i = 0; i < qualifyingResults.length; i++) {
-            qualifyingResults[i].car.position = i + 1;
-        }
-        phase = 'transition';
-        phaseTimer = 0;
-    }
-
-    function _updateTransition(adt) {
-        phaseTimer += adt;
-        if (phaseTimer >= TRANSITION_DURATION) {
-            _setupGrid();
-            phase = 'race_countdown';
-            phaseTimer = 3000;
-        }
-    }
-
-    function _setupGrid() {
-        // Place cars in qualifying order on the staggered starting grid
-        for (let i = 0; i < qualifyingResults.length; i++) {
-            const car = qualifyingResults[i].car;
-            const side = i % 2 === 0 ? -1 : 1;
-            // Start at 0.97 so pole car is before the line (1.0 wraps to 0.0 = last in sort)
-            car.placeOnTrack(0.97 - i * 0.012, side * 16);
-        }
-        PowerUps.init();
-        finishOrder = [];
-        leader = null;
-    }
-
-    function _updateRaceCountdown(adt) {
-        phaseTimer -= adt;
-        if (phaseTimer <= 0) {
-            phase = 'race';
-            phaseTimer = 0;
-        }
-    }
-
-    function _updateRace(adt) {
-        phaseTimer += adt;
-        const dtSec = adt / 1000;
-        const timeSinceStart = phaseTimer;
-
-        Effects.update(dtSec);
-
-        for (const car of cars) {
-            car.update(dtSec, cars, phaseTimer, timeSinceStart, false);
-        }
-
-        const sorted = [...cars].sort((a, b) => b.totalProgress - a.totalProgress);
-        for (let i = 0; i < sorted.length; i++) sorted[i].position = i + 1;
-        leader = sorted[0];
-
-        // --- OVERTAKE TRACKING ---
-        for (const car of cars) {
-            car._overtakeCooldown = Math.max(0, (car._overtakeCooldown || 0) - dtSec);
-            if (car._prevPosition > 0 && car.position < car._prevPosition && car._overtakeCooldown <= 0) {
-                car.overtakes = (car.overtakes || 0) + 1;
-                car._overtakeCooldown = 4.0;
-            }
-            car._prevPosition = car.position;
-        }
-
-        PowerUps.update(dtSec, cars, leader);
-
-        for (const car of cars) {
-            if (car.lap >= TOTAL_LAPS && !finishOrder.includes(car)) {
-                finishOrder.push(car);
-                car._finishedRace     = true;
-                car._finishFadeDelay  = 2000;
-                car._finishAlpha      = 1.0;
-            }
-        }
-
-        // --- FINISH FADE ---
-        for (const car of cars) {
-            if (car._finishedRace) {
-                if (car._finishFadeDelay > 0) {
-                    car._finishFadeDelay -= adt;
-                } else {
-                    car._finishAlpha = Math.max(0, car._finishAlpha - adt / 1200);
+            case PHASES.QUAL_INTRO:
+                if (phaseTimer > QUAL_INTRO_MS) {
+                    _to(PHASES.QUALIFYING);
+                    Commentary.say(`Qualifying at ${Track.getName()}. One flying lap each — the grid is on the line.`, 95);
                 }
+                break;
+
+            case PHASES.QUALIFYING:
+                _advance(dtMs, QUAL_SPEED * speedMultiplier);
+                if (sim.phase === 'grid') {
+                    _to(PHASES.QUAL_RESULT);
+                    const pole = sim.state.qualifyingResults[0];
+                    if (pole) Commentary.say(`${pole.car.speechName} takes pole position with a ${(pole.lapTime / 1000).toFixed(2)}.`, 95);
+                }
+                break;
+
+            case PHASES.QUAL_RESULT:
+                Camera.goWide();
+                if (phaseTimer > QUAL_RESULT_MS) _to(PHASES.COUNTDOWN);
+                break;
+
+            case PHASES.COUNTDOWN: {
+                const prev = Math.ceil((COUNTDOWN_MS - phaseTimer + dtMs) / 1000);
+                const now = Math.ceil((COUNTDOWN_MS - phaseTimer) / 1000);
+                if (now !== prev && now > 0 && now <= 5) Audio2.SFX.beep();
+                if (phaseTimer > COUNTDOWN_MS) {
+                    Audio2.SFX.go();
+                    sim.beginRace();
+                    _to(PHASES.RACE);
+                }
+                break;
             }
+
+            case PHASES.RACE:
+                _advance(dtMs, speedMultiplier);
+                _playEvents();
+                if (sim.phase === 'finished') {
+                    _to(PHASES.COOLDOWN);
+                    const w = sim.state.finishOrder[0];
+                    if (w) {
+                        Effects.addConfetti(w.x, w.y, 140);
+                        Camera.spotlight([w], 6);
+                    }
+                }
+                break;
+
+            case PHASES.COOLDOWN:
+                _advance(dtMs, speedMultiplier);   // let the tail of the field roll on
+                _playEvents();
+                if (phaseTimer > COOLDOWN_MS) {
+                    _to(PHASES.RESULTS);
+                    _award();
+                }
+                break;
+
+            case PHASES.RESULTS:
+                Camera.goWide();
+                break;
         }
 
-        // --- END-SCREEN TRIGGER ---
-        if (finishOrder.length === cars.length) {
-            if (_endScreenTimer < 0) _endScreenTimer = 0;
-            _endScreenTimer += adt;
-            if (_endScreenTimer > 4500) phase = 'race_end';
+        // Fade finished and retired cars out so the track empties gracefully.
+        for (const c of sim.cars) {
+            if (c.retired && c._finishFadeDelay === 0 && c._finishAlpha === 1) c._finishFadeDelay = 3500;
+            if (!c._finishedRace && !c.retired) continue;
+            if (c._finishFadeDelay > 0) c._finishFadeDelay -= dtMs;
+            else c._finishAlpha = Math.max(0, c._finishAlpha - dtMs / 1400);
+        }
+
+        Effects.update(dt);
+        Commentary.update(sim.state.simTime, phase === PHASES.RACE || phase === PHASES.COOLDOWN);
+
+        Camera.update(dt, {
+            order: sim.state.order || sim.cars,
+            cars: sim.cars,
+            phase: phase === PHASES.RACE || phase === PHASES.COOLDOWN ? 'race'
+                 : phase === PHASES.COUNTDOWN || phase === PHASES.GRID ? 'grid' : 'other',
+            safetyCar: sim.state.safetyCar,
+            leader: sim.state.leader,
+            wide: phase === PHASES.PREVIEW || phase === PHASES.QUAL_RESULT ||
+                  phase === PHASES.RESULTS || phase === PHASES.QUAL_INTRO,
+        });
+
+        _updateAudio();
+    }
+
+    function _to(p) { phase = p; phaseTimer = 0; }
+
+    function _advance(dtMs, speed) {
+        accumulator += dtMs * speed;
+        let steps = 0;
+        const MAX_STEPS = 40;    // never let a stalled tab try to catch up forever
+        while (accumulator >= STEP_MS && steps < MAX_STEPS) {
+            sim.step();
+            accumulator -= STEP_MS;
+            steps++;
+            if (sim.phase === 'grid' || sim.phase === 'finished') break;
+        }
+        if (steps >= MAX_STEPS) accumulator = 0;
+    }
+
+    /** Fire the pre-simulated events as the clock reaches them. */
+    function _playEvents() {
+        const t = sim.state.simTime;
+        const evts = preSim.events;
+        while (eventCursor < evts.length && evts[eventCursor].t <= t) {
+            const e = evts[eventCursor++];
+            Hud.onEvent(e);
+            Audio2.playForEvent(e.type, e.data);
+            _directorCut(e);
         }
     }
 
+    /** Big moments take the camera. */
+    function _directorCut(e) {
+        const byId = id => sim.cars.find(c => c.id === id);
+        const d = e.data || {};
+        switch (e.type) {
+            case 'overtake':
+            case 'lead_change':
+                if (e.significance > 70) Camera.spotlight([byId(d.carId), byId(d.victimId || d.prevId)], 5);
+                break;
+            case 'crash':
+            case 'contact':
+                Camera.spotlight([byId(d.carId), byId(d.otherId)], 4.5);
+                Camera.shake(9 + (d.severity || 0) * 12);
+                break;
+            case 'spin':
+                Camera.spotlight([byId(d.carId)], 4.5);
+                Camera.shake(5);
+                break;
+            case 'dnf':
+            case 'mech_issue':
+                Camera.spotlight([byId(d.carId)], 4);
+                break;
+            case 'pit_enter':
+            case 'pit_exit':
+                if (d.position <= 4) Camera.spotlight([byId(d.carId)], 4.5);
+                break;
+            case 'chequered':
+                Camera.spotlight([byId(d.carId)], 6);
+                break;
+        }
+    }
+
+    function _updateAudio() {
+        const subs = Camera.getSubjects();
+        const ref = subs[0] || sim.state.leader;
+        const running = phase === PHASES.RACE || phase === PHASES.QUALIFYING || phase === PHASES.COOLDOWN;
+        if (!running || !ref) { Audio2.engineOff(); return; }
+        Audio2.updateEngine(Math.min(1, ref.speed / 380), Math.min(1, (Camera.getZoom() - 1) / 2));
+    }
+
+    /** Live snapshot for the commentator's filler lines. */
+    function getLive() {
+        if (!sim) return null;
+        return {
+            order: (sim.state.order || sim.cars).filter(c => !c.retired),
+            lap: sim.state.lapOfLeader,
+            totalLaps: sim.state.totalLaps,
+            weatherLabel: sim.weather.state.label,
+        };
+    }
+
+    function _award() {
+        if (awarded) return;
+        awarded = Garage.applyRaceResult(preSim.result);
+        if (onResults) onResults(preSim.result, awarded);
+    }
+
     // -------------------------------------------------------------------------
-    // Draw
+    // Drawing — world space (inside the camera transform)
     // -------------------------------------------------------------------------
 
-    function draw(ctx) {
+    function drawWorld(ctx) {
         Effects.draw(ctx);
-        PowerUps.draw(ctx);
+        sim.powerUps.draw(ctx);
 
-        // Cars sorted by progress for painter's algorithm (back car first)
-        const sorted = [...cars].sort((a, b) => a.totalProgress - b.totalProgress);
+        const sorted = sim.cars.slice().sort((a, b) => a.totalProgress - b.totalProgress);
         for (const car of sorted) car.draw(ctx);
 
-        _drawPhaseOverlay(ctx);
+        if (phase === PHASES.COUNTDOWN || phase === PHASES.GRID) _drawGridMarkers(ctx);
     }
 
-    function _drawPhaseOverlay(ctx) {
-        const W = ctx.canvas.width, H = ctx.canvas.height;
-        const cx = W / 2, cy = H / 2;
-
-        if (phase === 'qual_countdown') {
-            _drawCountdown(ctx, W, H, cx, cy, phaseTimer, 'QUALIFYING LAP', '#00ccff');
-        } else if (phase === 'transition') {
-            _drawTransition(ctx, W, H, cx, cy);
-        } else if (phase === 'race_countdown') {
-            _drawCountdown(ctx, W, H, cx, cy, phaseTimer, 'RACE START', '#ff4444');
-        } else if (phase === 'race_end') {
-            _drawEndScreen(ctx, W, H, cx, cy);
+    function _drawGridMarkers(ctx) {
+        for (const c of sim.cars) {
+            ctx.save();
+            ctx.globalAlpha = 0.85;
+            ctx.translate(c.x, c.y - 40);
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            Hud.rrect(ctx, -38, -10, 76, 20, 4);
+            ctx.fill();
+            ctx.fillStyle = CarSVG.TEAM_COLORS[c.team].light;
+            ctx.font = 'bold 11px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(c.name.toUpperCase(), 0, 0);
+            ctx.restore();
         }
     }
 
-    function _drawCountdown(ctx, W, H, cx, cy, msRemaining, label, accentColor) {
-        ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,0.38)';
-        ctx.fillRect(0, 0, W, H);
+    // -------------------------------------------------------------------------
+    // Drawing — screen space
+    // -------------------------------------------------------------------------
 
-        // Label
+    function drawScreen(ctx, W, H) {
+        const showHud = phase === PHASES.RACE || phase === PHASES.COOLDOWN ||
+                        phase === PHASES.QUALIFYING || phase === PHASES.COUNTDOWN;
+
+        Effects.drawWeather(ctx, sim.weather.state.wetness, sim.weather.state.rain, W, H, 1 / 60);
+
+        if (showHud) Hud.draw(ctx, sim, { raceNumber });
+
+        switch (phase) {
+            case PHASES.PREVIEW:     _drawPreview(ctx, W, H); break;
+            case PHASES.QUAL_INTRO:  _drawBanner(ctx, W, H, 'QUALIFYING', 'One flying lap each decides the grid', '#00d4ff'); break;
+            case PHASES.QUAL_RESULT: _drawQualResults(ctx, W, H); break;
+            case PHASES.COUNTDOWN:   _drawCountdown(ctx, W, H); break;
+            case PHASES.RESULTS:     _drawResults(ctx, W, H); break;
+        }
+    }
+
+    function _dim(ctx, W, H, alpha) {
+        ctx.fillStyle = `rgba(4, 6, 20, ${alpha})`;
+        ctx.fillRect(0, 0, W, H);
+    }
+
+    function _drawPreview(ctx, W, H) {
+        const t = Math.min(1, phaseTimer / 500);
+        const out = Math.min(1, (PREVIEW_MS - phaseTimer) / 500);
+        ctx.save();
+        ctx.globalAlpha = Math.min(t, out);
+        _dim(ctx, W, H, 0.82);
+
+        const cx = W / 2;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = accentColor;
-        ctx.font = 'bold 18px Arial';
-        ctx.globalAlpha = 0.9;
-        ctx.fillText(label, cx, cy - 55);
 
-        // Lights
-        const total = 3;
-        const lightsOn = total - Math.max(0, Math.ceil(msRemaining / 1000));
-        for (let i = 0; i < total; i++) {
-            const lx = cx - 60 + i * 60;
-            const lit = i < lightsOn;
-            ctx.globalAlpha = 1;
-            ctx.beginPath();
-            ctx.arc(lx, cy - 15, 18, 0, Math.PI * 2);
-            ctx.fillStyle = lit ? accentColor : accentColor.replace(')', ', 0.15)').replace('rgb', 'rgba');
+        ctx.fillStyle = '#e94560';
+        ctx.font = `bold ${Math.round(58 * Hud.scale)}px Rajdhani, Arial`;
+        ctx.shadowColor = '#e94560'; ctx.shadowBlur = 30;
+        ctx.fillText('ZERO RACE', cx, H * 0.24);
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.round(30 * Hud.scale)}px Rajdhani, Arial`;
+        ctx.fillText(`ROUND ${raceNumber}  ·  ${Track.getName().toUpperCase()}`, cx, H * 0.335);
+
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.font = `${Math.round(17 * Hud.scale)}px Rajdhani, Arial`;
+        ctx.fillText(`${totalLaps} laps   ·   ${preSim.weather}   ·   seed ${Rng.toCode(seed)}`, cx, H * 0.39);
+
+        // Constructor line-up with current upgrade levels
+        const teams = Garage.TEAMS;
+        const boxW = Math.min(200 * Hud.scale, W / 5);
+        const startX = cx - (teams.length * boxW) / 2;
+        for (let i = 0; i < teams.length; i++) {
+            const t2 = teams[i];
+            const col = CarSVG.TEAM_COLORS[t2];
+            const x = startX + i * boxW + boxW / 2;
+            const y = H * 0.52;
+
+            ctx.fillStyle = 'rgba(255,255,255,0.05)';
+            Hud.rrect(ctx, x - boxW / 2 + 6, y - 30, boxW - 12, 150 * Hud.scale, 8);
             ctx.fill();
-            ctx.strokeStyle = '#666';
+            ctx.fillStyle = col.main;
+            ctx.fillRect(x - boxW / 2 + 6, y - 30, boxW - 12, 4);
+
+            ctx.fillStyle = col.light;
+            ctx.font = `bold ${Math.round(19 * Hud.scale)}px Rajdhani, Arial`;
+            ctx.fillText(t2.toUpperCase(), x, y);
+
+            const team = Garage.getTeam(t2);
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.font = `${Math.round(12 * Hud.scale)}px Rajdhani, Arial`;
+            ctx.fillText(`${Garage.totalLevels(t2)} upgrades  ·  ${team.championship} pts`, x, y + 22 * Hud.scale);
+
+            // Top three upgrade lines
+            const top = Garage.CATALOG
+                .map(u => ({ u, lvl: team.upgrades[u.id] || 0 }))
+                .filter(o => o.lvl > 0)
+                .sort((a, b) => b.lvl - a.lvl)
+                .slice(0, 4);
+            ctx.font = `${Math.round(11 * Hud.scale)}px Rajdhani, Arial`;
+            top.forEach((o, k) => {
+                ctx.fillStyle = 'rgba(255,255,255,0.75)';
+                ctx.fillText(`${o.u.icon} ${o.u.name} ${'▮'.repeat(o.lvl)}`, x, y + (42 + k * 16) * Hud.scale);
+            });
+            if (!top.length) {
+                ctx.fillStyle = 'rgba(255,255,255,0.28)';
+                ctx.fillText('stock car', x, y + 44 * Hud.scale);
+            }
+        }
+        ctx.restore();
+    }
+
+    function _drawBanner(ctx, W, H, title, subtitle, color) {
+        const t = Math.min(1, phaseTimer / 300);
+        ctx.save();
+        ctx.globalAlpha = t;
+        _dim(ctx, W, H, 0.55);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = color;
+        ctx.shadowColor = color; ctx.shadowBlur = 26;
+        ctx.font = `bold ${Math.round(46 * Hud.scale)}px Rajdhani, Arial`;
+        ctx.fillText(title, W / 2, H / 2 - 16);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.font = `${Math.round(16 * Hud.scale)}px Rajdhani, Arial`;
+        ctx.fillText(subtitle, W / 2, H / 2 + 26);
+        ctx.restore();
+    }
+
+    function _drawQualResults(ctx, W, H) {
+        const t = phaseTimer / QUAL_RESULT_MS;
+        const cx = W / 2, cy = H / 2;
+        const S = Hud.scale;
+        ctx.save();
+        _dim(ctx, W, H, Math.min(1, t * 5) * 0.92);
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const headerT = Math.min(1, t / 0.08);
+        ctx.globalAlpha = headerT;
+        ctx.fillStyle = '#00d4ff';
+        ctx.shadowColor = '#00d4ff'; ctx.shadowBlur = 28;
+        ctx.font = `bold ${Math.round(38 * S)}px Rajdhani, Arial`;
+        ctx.fillText('QUALIFYING RESULTS', cx, cy - 215 * S);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(160,230,255,0.7)';
+        ctx.font = `${Math.round(14 * S)}px Rajdhani, Arial`;
+        ctx.fillText('GRID POSITIONS LOCKED IN', cx, cy - 185 * S);
+
+        const rowH = 44 * S, rowW = 520 * S;
+        const rowX = cx - rowW / 2;
+        const listTop = cy - 155 * S;
+        const results = sim.state.qualifyingResults;
+        const best = results[0] ? results[0].lapTime : null;
+
+        for (let i = 0; i < results.length; i++) {
+            const { car, lapTime } = results[i];
+            const rowT = Math.max(0, Math.min(1, (t - 0.07 - i * 0.075) / 0.08));
+            if (rowT <= 0) continue;
+            const ry = listTop + i * (rowH + 3 * S);
+            const midY = ry + rowH / 2;
+
+            ctx.save();
+            ctx.globalAlpha = rowT;
+            ctx.translate((1 - rowT) * 300, 0);
+
+            const colors = CarSVG.TEAM_COLORS[car.team];
+            const first = i === 0;
+
+            Hud.rrect(ctx, rowX, ry, rowW, rowH, 5);
+            ctx.fillStyle = first ? 'rgba(255,215,0,0.15)' : (i % 2 ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.06)');
+            ctx.fill();
+            ctx.fillStyle = colors.light;
+            ctx.fillRect(rowX, ry, 5 * S, rowH);
+
+            ctx.textAlign = 'left';
+            ctx.fillStyle = first ? '#ffd700' : 'rgba(255,255,255,0.45)';
+            ctx.font = `bold ${Math.round((first ? 21 : 14) * S)}px Rajdhani, Arial`;
+            ctx.fillText(`P${i + 1}`, rowX + 20 * S, midY);
+
+            ctx.fillStyle = first ? '#fff' : colors.light;
+            ctx.font = `bold ${Math.round((first ? 20 : 16) * S)}px Rajdhani, Arial`;
+            ctx.fillText(car.name, rowX + 66 * S, midY);
+
+            ctx.textAlign = 'right';
+            if (lapTime) {
+                if (i > 0 && best) {
+                    ctx.font = `${Math.round(15 * S)}px monospace`;
+                    ctx.fillStyle = '#dde8ff';
+                    ctx.fillText(Hud.fmtTime(lapTime), rowX + rowW - 16 * S, midY - 8 * S);
+                    ctx.font = `${Math.round(12 * S)}px monospace`;
+                    ctx.fillStyle = 'rgba(255,110,110,0.9)';
+                    ctx.fillText(`+${((lapTime - best) / 1000).toFixed(3)}`, rowX + rowW - 16 * S, midY + 9 * S);
+                } else {
+                    ctx.font = `bold ${Math.round(19 * S)}px monospace`;
+                    ctx.fillStyle = '#ffd700';
+                    ctx.fillText(Hud.fmtTime(lapTime), rowX + rowW - 16 * S, midY);
+                }
+            } else {
+                ctx.font = `${Math.round(15 * S)}px monospace`;
+                ctx.fillStyle = 'rgba(255,120,120,0.9)';
+                ctx.fillText('NO TIME', rowX + rowW - 16 * S, midY);
+            }
+            ctx.restore();
+        }
+
+        const remaining = Math.max(0, QUAL_RESULT_MS - phaseTimer);
+        if (remaining < 4200) {
+            ctx.globalAlpha = 1;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ff6060';
+            ctx.shadowColor = '#ff4444'; ctx.shadowBlur = 20;
+            ctx.font = `bold ${Math.round(24 * S)}px Rajdhani, Arial`;
+            ctx.fillText(`RACE STARTS IN ${(remaining / 1000).toFixed(1)}s`, cx, listTop + 8 * (rowH + 3 * S) + 34 * S);
+            ctx.shadowBlur = 0;
+        }
+        ctx.restore();
+    }
+
+    function _drawCountdown(ctx, W, H) {
+        const remaining = Math.max(0, COUNTDOWN_MS - phaseTimer);
+        const S = Hud.scale;
+        const cx = W / 2, cy = H * 0.22;
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // Five red lights, F1 style: they light up one per second, then all out.
+        const lit = 5 - Math.max(0, Math.ceil((remaining - 200) / 1000));
+        const r = 20 * S, gap = 52 * S;
+        for (let i = 0; i < 5; i++) {
+            const lx = cx - gap * 2 + i * gap;
+            const on = i < lit && remaining > 200;
+            ctx.beginPath();
+            ctx.arc(lx, cy, r, 0, Math.PI * 2);
+            ctx.fillStyle = on ? '#ff2b2b' : 'rgba(60,20,20,0.65)';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
             ctx.lineWidth = 2;
             ctx.stroke();
-            if (lit) {
-                ctx.globalAlpha = 0.4;
+            if (on) {
+                ctx.globalAlpha = 0.35;
                 ctx.beginPath();
-                ctx.arc(lx, cy - 15, 28, 0, Math.PI * 2);
-                ctx.fillStyle = accentColor;
+                ctx.arc(lx, cy, r * 1.8, 0, Math.PI * 2);
+                ctx.fillStyle = '#ff2b2b';
                 ctx.fill();
                 ctx.globalAlpha = 1;
             }
         }
 
-        const countdown = Math.ceil(msRemaining / 1000);
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = countdown > 0 ? '#fff' : '#00ff88';
-        ctx.font = 'bold 52px Arial';
-        ctx.fillText(countdown > 0 ? countdown : 'GO!', cx, cy + 45);
-        ctx.restore();
-    }
-
-    function _drawTransition(ctx, W, H, cx, cy) {
-        const t = phaseTimer / TRANSITION_DURATION; // 0 → 1
-        ctx.save();
-
-        // Dark overlay
-        const overlayAlpha = Math.min(1, t * 5) * 0.91;
-        ctx.fillStyle = `rgba(4, 6, 22, ${overlayAlpha})`;
-        ctx.fillRect(0, 0, W, H);
-
-        // ── HEADER ──
-        const headerT = Math.max(0, Math.min(1, t / 0.10));
-        ctx.globalAlpha = headerT;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.save();
-        ctx.translate(cx, cy - 195);
-        const hs = 0.6 + 0.4 * headerT;
-        ctx.scale(hs, hs);
-        ctx.shadowColor = '#00d4ff';
-        ctx.shadowBlur = 28;
-        ctx.fillStyle = '#00d4ff';
-        ctx.font = 'bold 38px Arial';
-        ctx.fillText('QUALIFYING COMPLETE', 0, 0);
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(160, 230, 255, 0.75)';
-        ctx.font = '15px Arial';
-        ctx.fillText('GRID POSITIONS LOCKED IN', 0, 40);
-        ctx.restore();
-
-        // ── RESULT ROWS ──
-        const rowHeight = 50;   // spacing between row tops
-        const rowH      = 42;   // visible row height
-        const rowW      = 510;
-        const rowX      = cx - rowW / 2;
-        const listTop   = cy - 155;
-        const rowRevealStart = 0.09;
-        const rowRevealStep  = 0.08;
-
-        for (let i = 0; i < qualifyingResults.length; i++) {
-            const { car, lapTime } = qualifyingResults[i];
-            const rowT = Math.max(0, Math.min(1, (t - rowRevealStart - i * rowRevealStep) / 0.09));
-            if (rowT <= 0) continue;
-
-            const rowY  = listTop + i * rowHeight;
-            const midY  = rowY + rowH / 2;
-            const slideX = (1 - rowT) * 320;
-
-            ctx.save();
-            ctx.globalAlpha = rowT;
-            ctx.translate(slideX, 0);
-
-            const colors  = CarSVG.TEAM_COLORS[car.team];
-            const isFirst = i === 0;
-
-            // Row background
-            ctx.fillStyle = isFirst
-                ? 'rgba(255, 215, 0, 0.14)'
-                : (i % 2 === 0 ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.18)');
-            ctx.beginPath();
-            ctx.roundRect(rowX, rowY, rowW, rowH, 5);
-            ctx.fill();
-
-            // Left accent bar (team colour)
-            ctx.fillStyle = colors.light;
-            ctx.beginPath();
-            ctx.roundRect(rowX, rowY, 5, rowH, [5, 0, 0, 5]);
-            ctx.fill();
-
-            // Team colour circle
-            ctx.beginPath();
-            ctx.arc(rowX + 28, midY, 9, 0, Math.PI * 2);
-            ctx.fillStyle = colors.light;
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-
-            // Position
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.font = isFirst ? 'bold 22px Arial' : 'bold 14px Arial';
-            ctx.fillStyle = isFirst ? '#ffd700' : 'rgba(255,255,255,0.45)';
-            ctx.fillText(`P${i + 1}`, rowX + 46, midY);
-
-            // Car name
-            ctx.font = isFirst ? 'bold 20px Arial' : 'bold 15px Arial';
-            ctx.fillStyle = isFirst ? '#ffffff' : colors.light;
-            ctx.fillText(car.name, rowX + 90, midY);
-
-            // Lap time (right-aligned)
-            const timeStr = lapTime ? _formatTime(lapTime) : 'DNF';
-            ctx.textAlign = 'right';
-
-            if (i > 0 && lapTime && qualifyingResults[0].lapTime) {
-                // Time on top line, gap below
-                ctx.font = '15px monospace';
-                ctx.fillStyle = '#dde8ff';
-                ctx.fillText(timeStr, rowX + rowW - 16, midY - 8);
-                const gap = lapTime - qualifyingResults[0].lapTime;
-                ctx.font = '12px monospace';
-                ctx.fillStyle = 'rgba(255, 110, 110, 0.9)';
-                ctx.fillText(`+${_formatTime(gap)}`, rowX + rowW - 16, midY + 9);
-            } else {
-                ctx.font = isFirst ? 'bold 20px monospace' : '15px monospace';
-                ctx.fillStyle = isFirst ? '#ffd700' : '#dde8ff';
-                ctx.fillText(timeStr, rowX + rowW - 16, midY);
-            }
-
-            ctx.restore();
-        }
-
-        // ── RACE STARTS IN (last 4 seconds) ──
-        const ctdwnStart = 1 - (4200 / TRANSITION_DURATION);
-        const ctdwnT = Math.max(0, (t - ctdwnStart) / 0.06);
-        if (ctdwnT > 0) {
-            const remaining = Math.max(0, TRANSITION_DURATION - phaseTimer);
-            ctx.globalAlpha = Math.min(1, ctdwnT);
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.shadowColor = '#ff4444';
-            ctx.shadowBlur = 22;
-            ctx.fillStyle = '#ff6060';
-            ctx.font = 'bold 26px Arial';
-            ctx.fillText(`RACE STARTS IN  ${(remaining / 1000).toFixed(1)}s`, cx, listTop + 8 * rowHeight + 28);
+        if (remaining <= 200) {
+            ctx.fillStyle = '#00ff88';
+            ctx.shadowColor = '#00ff88'; ctx.shadowBlur = 30;
+            ctx.font = `bold ${Math.round(52 * S)}px Rajdhani, Arial`;
+            ctx.fillText('GO!', cx, cy + 62 * S);
             ctx.shadowBlur = 0;
         }
-
         ctx.restore();
     }
 
-    function _drawEndScreen(ctx, W, H, cx, cy) {
+    // -------------------------------------------------------------------------
+    // Results + call to action
+    // -------------------------------------------------------------------------
+
+    function _drawResults(ctx, W, H) {
+        const res = preSim.result;
+        const S = Hud.scale;
+        const t = Math.min(1, phaseTimer / 700);
+
         ctx.save();
-
-        // Full dark overlay
-        ctx.fillStyle = 'rgba(4, 6, 22, 0.93)';
-        ctx.fillRect(0, 0, W, H);
-
-        const fadeIn = Math.min(1, phaseTimer / 600);
-        ctx.globalAlpha = fadeIn;
-
-        // ── TITLE ──
+        ctx.globalAlpha = t;
+        _dim(ctx, W, H, 0.94);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.shadowColor = '#ffd700';
-        ctx.shadowBlur = 30;
+
         ctx.fillStyle = '#ffd700';
-        ctx.font = 'bold 42px Arial';
-        ctx.fillText('RACE COMPLETE', cx, 54);
+        ctx.shadowColor = '#ffd700'; ctx.shadowBlur = 26;
+        ctx.font = `bold ${Math.round(38 * S)}px Rajdhani, Arial`;
+        ctx.fillText('RACE COMPLETE', W / 2, 46 * S);
         ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = `${Math.round(13 * S)}px Rajdhani, Arial`;
+        ctx.fillText(`Round ${raceNumber} · ${Track.getName()} · ${res.laps} laps · seed ${res.seedCode}`, W / 2, 76 * S);
 
-        // ── PODIUM (top 3) ──
-        const podiumOrder = [1, 0, 2];  // draw P2, P1, P3 for visual height effect
-        const podiumX     = [cx - 130, cx, cx + 130];
-        const podiumBases = [cy - 40, cy - 80, cy - 20];  // P2 lower than P1, P3 lowest
-        const podiumH     = [90, 130, 70];
-        const medalColors = ['#C0C0C0', '#FFD700', '#CD7F32'];
-        const podiumLabels = ['2ND', '1ST', '3RD'];
-
-        for (let vi = 0; vi < 3; vi++) {
-            const ri = podiumOrder[vi];
-            if (ri >= finishOrder.length) continue;
-            const car = finishOrder[ri];
-            const px  = podiumX[vi];
-            const base = podiumBases[vi] + cy - 50;
-            const ph  = podiumH[vi];
-            const col = CarSVG.TEAM_COLORS[car.team].light;
-            const medal = medalColors[vi];
-
-            // Podium block
-            ctx.fillStyle = vi === 1 ? 'rgba(255,215,0,0.18)' : 'rgba(255,255,255,0.06)';
-            ctx.fillRect(px - 50, base, 100, ph);
-            ctx.strokeStyle = vi === 1 ? 'rgba(255,215,0,0.5)' : 'rgba(255,255,255,0.15)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(px - 50, base, 100, ph);
-
-            // Medal circle
-            ctx.beginPath();
-            ctx.arc(px, base - 22, 16, 0, Math.PI * 2);
-            ctx.fillStyle = medal;
-            ctx.fill();
-            ctx.fillStyle = '#000';
-            ctx.font = 'bold 13px Arial';
-            ctx.fillText(podiumLabels[vi], px, base - 22);
-
-            // Car colour bar
-            ctx.fillStyle = col;
-            ctx.fillRect(px - 50, base, 5, ph);
-
-            // Car name
-            ctx.fillStyle = '#fff';
-            ctx.font = `bold ${vi === 1 ? 14 : 12}px Arial`;
-            ctx.fillText(car.name, px + 5, base + ph * 0.45);
-
-            // Best lap
-            if (car.bestLapTime < Infinity) {
-                ctx.fillStyle = 'rgba(200,230,255,0.75)';
-                ctx.font = '11px monospace';
-                ctx.fillText(_formatTime(car.bestLapTime), px + 5, base + ph * 0.72);
-            }
-        }
-
-        // ── FULL STANDINGS (right column) ──
-        const listX = cx + 230, listTop = 100;
+        // ── Classification ──
+        const colX = W * 0.06;
+        const top = 118 * S;
         ctx.textAlign = 'left';
         ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = 'bold 11px Arial';
-        ctx.fillText('FINAL STANDINGS', listX, listTop - 14);
+        ctx.font = `bold ${Math.round(11 * S)}px Rajdhani, Arial`;
+        ctx.fillText('FINAL CLASSIFICATION', colX, top - 16 * S);
 
-        for (let i = 0; i < finishOrder.length; i++) {
-            const car = finishOrder[i];
-            const ry = listTop + i * 36;
-            const col = CarSVG.TEAM_COLORS[car.team].light;
-
+        res.standings.forEach((s, i) => {
+            const ry = top + i * 34 * S;
+            const col = CarSVG.TEAM_COLORS[s.team];
+            Hud.rrect(ctx, colX, ry, W * 0.30, 30 * S, 4);
             ctx.fillStyle = i < 3 ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
-            ctx.fillRect(listX - 4, ry - 10, 200, 30);
+            ctx.fill();
+            ctx.fillStyle = col.main;
+            ctx.fillRect(colX, ry, 4 * S, 30 * S);
 
-            ctx.fillStyle = col;
-            ctx.fillRect(listX - 4, ry - 10, 4, 30);
+            ctx.fillStyle = i === 0 ? '#ffd700' : 'rgba(255,255,255,0.5)';
+            ctx.font = `bold ${Math.round(13 * S)}px Rajdhani, Arial`;
+            ctx.fillText(`P${i + 1}`, colX + 12 * S, ry + 15 * S);
 
-            ctx.fillStyle = i === 0 ? '#FFD700' : 'rgba(255,255,255,0.5)';
-            ctx.font = 'bold 12px Arial';
-            ctx.fillText(`P${i + 1}`, listX + 6, ry + 5);
+            ctx.fillStyle = s.retired ? 'rgba(255,140,140,0.7)' : '#fff';
+            ctx.font = `bold ${Math.round(14 * S)}px Rajdhani, Arial`;
+            ctx.fillText(s.name, colX + 42 * S, ry + 15 * S);
 
-            ctx.fillStyle = i < 3 ? '#fff' : 'rgba(255,255,255,0.75)';
-            ctx.font = `${i < 3 ? 'bold ' : ''}12px Arial`;
-            ctx.fillText(car.name, listX + 32, ry + 5);
-        }
+            ctx.textAlign = 'right';
+            ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
+            const delta = s.placesGained;
+            if (s.retired) { ctx.fillStyle = '#ff6b6b'; ctx.fillText('DNF', colX + W * 0.30 - 12 * S, ry + 15 * S); }
+            else if (delta !== 0) {
+                ctx.fillStyle = delta > 0 ? '#4ade80' : '#ff8a80';
+                ctx.fillText(`${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}`, colX + W * 0.30 - 12 * S, ry + 15 * S);
+            } else { ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillText('–', colX + W * 0.30 - 12 * S, ry + 15 * S); }
+            ctx.textAlign = 'left';
+        });
 
-        // ── STATS (left column) ──
-        const statsX = cx - W * 0.38, statsTop = cy + 110;
-        ctx.textAlign = 'left';
+        // ── Race honours ──
+        const midX = W * 0.40;
         ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = 'bold 11px Arial';
-        ctx.fillText('RACE STATS', statsX, statsTop - 14);
+        ctx.font = `bold ${Math.round(11 * S)}px Rajdhani, Arial`;
+        ctx.fillText('RACE HONOURS', midX, top - 16 * S);
 
-        // Fastest lap
-        const flCar = [...cars].filter(c => c.bestLapTime < Infinity)
-                               .sort((a,b) => a.bestLapTime - b.bestLapTime)[0];
-        if (flCar) {
-            _drawStatRow(ctx, statsX, statsTop,      '⚡ FASTEST LAP',
-                `${flCar.name}`, _formatTime(flCar.bestLapTime), CarSVG.TEAM_COLORS[flCar.team].light);
-        }
+        const honours = [];
+        if (res.fastestLap)    honours.push(['⚡ FASTEST LAP', res.fastestLap.name, Hud.fmtTime(res.fastestLap.time), res.fastestLap.team]);
+        if (res.mostOvertakes) honours.push(['🏎 MOST OVERTAKES', res.mostOvertakes.name, `${res.mostOvertakes.overtakes} passes`, res.mostOvertakes.team]);
+        if (res.mostBoosters)  honours.push(['🟡 MOST BOOST PADS', `${res.mostBoosters.team.toUpperCase()} team`, `${res.mostBoosters.count} pads`, res.mostBoosters.team]);
+        if (res.cleanestTeam)  honours.push(['🛡 CLEANEST RACE', `${res.cleanestTeam.toUpperCase()} team`, 'fewest incidents', res.cleanestTeam]);
+        honours.push(['☁ CONDITIONS', res.weather, res.weatherEnd, 'blue']);
+        honours.push(['🚨 SAFETY CARS', String(res.safetyCars), res.safetyCars ? 'deployed' : 'clean race', 'yellow']);
 
-        // Most boosters by team
-        const teamBoosters = {};
-        for (const car of cars) {
-            teamBoosters[car.team] = (teamBoosters[car.team] || 0) + (car.boostersCollected || 0);
-        }
-        const topTeamEntry = Object.entries(teamBoosters).sort((a,b) => b[1]-a[1])[0];
-        if (topTeamEntry && topTeamEntry[1] > 0) {
-            const [topTeam, topCount] = topTeamEntry;
-            _drawStatRow(ctx, statsX, statsTop + 44, '🟡 MOST BOOSTERS',
-                `${topTeam.charAt(0).toUpperCase()+topTeam.slice(1)} team`, `${topCount} pads`,
-                CarSVG.TEAM_COLORS[topTeam].light);
-        }
+        honours.forEach((h, i) => {
+            const ry = top + i * 40 * S;
+            const col = CarSVG.TEAM_COLORS[h[3]] || CarSVG.TEAM_COLORS.blue;
+            Hud.rrect(ctx, midX, ry, W * 0.22, 34 * S, 4);
+            ctx.fillStyle = 'rgba(255,255,255,0.05)';
+            ctx.fill();
+            ctx.fillStyle = col.main;
+            ctx.fillRect(midX, ry, 4 * S, 34 * S);
+            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+            ctx.font = `bold ${Math.round(9.5 * S)}px Rajdhani, Arial`;
+            ctx.fillText(h[0], midX + 12 * S, ry + 11 * S);
+            ctx.fillStyle = '#fff';
+            ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
+            ctx.fillText(`${h[1]}  —  ${h[2]}`, midX + 12 * S, ry + 25 * S);
+        });
 
-        // Most overtakes
-        const topPasser = [...cars].sort((a,b) => (b.overtakes||0)-(a.overtakes||0))[0];
-        if (topPasser && topPasser.overtakes > 0) {
-            _drawStatRow(ctx, statsX, statsTop + 88, '🏎 MOST OVERTAKES',
-                topPasser.name, `${topPasser.overtakes} passes`, CarSVG.TEAM_COLORS[topPasser.team].light);
-        }
+        // ── Development points + call to action ──
+        const ctaX = W * 0.645;
+        const ctaW = W * 0.30;
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.font = `bold ${Math.round(11 * S)}px Rajdhani, Arial`;
+        ctx.fillText('DEVELOPMENT POINTS EARNED', ctaX, top - 16 * S);
+
+        Garage.TEAMS.forEach((team, i) => {
+            const ry = top + i * 40 * S;
+            const col = CarSVG.TEAM_COLORS[team];
+            const info = Garage.getTeam(team);
+            const gained = awarded && awarded[team] ? awarded[team].total : 0;
+
+            Hud.rrect(ctx, ctaX, ry, ctaW, 34 * S, 4);
+            ctx.fillStyle = `rgba(${_rgb(col.main)},0.16)`;
+            ctx.fill();
+            ctx.fillStyle = col.main;
+            ctx.fillRect(ctaX, ry, 4 * S, 34 * S);
+
+            ctx.fillStyle = col.light;
+            ctx.font = `bold ${Math.round(15 * S)}px Rajdhani, Arial`;
+            ctx.fillText(team.toUpperCase(), ctaX + 14 * S, ry + 17 * S);
+
+            ctx.fillStyle = '#4ade80';
+            ctx.font = `bold ${Math.round(14 * S)}px Rajdhani, Arial`;
+            ctx.fillText(`+${gained}`, ctaX + 90 * S, ry + 17 * S);
+
+            ctx.fillStyle = 'rgba(255,255,255,0.65)';
+            ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
+            ctx.fillText(`bank ${info.bank}  ·  ${info.championship} champ pts`, ctaX + 130 * S, ry + 17 * S);
+        });
+
+        // The actual call to action
+        const cy = top + 4 * 40 * S + 22 * S;
+        const pulse = 0.75 + 0.25 * Math.sin(performance.now() * 0.004);
+        Hud.rrect(ctx, ctaX, cy, ctaW, 148 * S, 8);
+        ctx.fillStyle = 'rgba(233,69,96,0.14)';
+        ctx.fill();
+        ctx.strokeStyle = `rgba(233,69,96,${pulse})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ff7a90';
+        ctx.font = `bold ${Math.round(17 * S)}px Rajdhani, Arial`;
+        ctx.fillText('👇  YOU DECIDE THE NEXT RACE', ctaX + 16 * S, cy + 24 * S);
+
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.font = `${Math.round(12.5 * S)}px Rajdhani, Arial`;
+        const lines = [
+            'Comment a team and an upgrade, for example:',
+            '"RED brakes"   ·   "green tyres"   ·   "blue engine"',
+            'Most-voted upgrade per team is fitted before the next round.',
+            '',
+            `Upgrades: ${Garage.CATALOG.map(u => u.name).join(' · ')}`,
+        ];
+        lines.forEach((ln, i) => {
+            ctx.fillStyle = i === 1 ? '#ffd97a' : 'rgba(255,255,255,0.75)';
+            ctx.font = `${Math.round((i === 1 ? 13.5 : 12) * S)}px Rajdhani, Arial`;
+            ctx.fillText(ln, ctaX + 16 * S, cy + (48 + i * 19) * S);
+        });
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.32)';
+        ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
+        ctx.fillText('N — next race     ·     H — control room     ·     C — toggle broadcast camera',
+                     W / 2, H - 26 * S);
 
         ctx.restore();
     }
 
-    function _drawStatRow(ctx, x, y, label, name, value, accentColor) {
-        ctx.fillStyle = 'rgba(255,255,255,0.06)';
-        ctx.fillRect(x - 4, y - 10, 210, 36);
-        ctx.fillStyle = accentColor;
-        ctx.fillRect(x - 4, y - 10, 4, 36);
-        ctx.fillStyle = 'rgba(255,255,255,0.45)';
-        ctx.font = 'bold 10px Arial';
-        ctx.fillText(label, x + 6, y + 2);
-        ctx.fillStyle = '#fff';
-        ctx.font = '12px Arial';
-        ctx.fillText(`${name}  —  ${value}`, x + 6, y + 17);
+    function _rgb(hex) {
+        return `${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)}`;
     }
 
     // -------------------------------------------------------------------------
-    // Helpers
+    // Public API
     // -------------------------------------------------------------------------
 
-    function _formatTime(ms) {
-        const m = Math.floor(ms / 60000);
-        const s = Math.floor((ms % 60000) / 1000);
-        const cs = Math.floor((ms % 1000) / 10);
-        return `${m}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+    function setPaused(v) {
+        paused = !!v;
+        if (paused) Commentary.cut();
     }
-
-    // -------------------------------------------------------------------------
-    // Public API (unchanged signatures)
-    // -------------------------------------------------------------------------
-
-    function getStandings() {
-        return [...cars].sort((a, b) => a.position - b.position);
-    }
-
-    function getTeamScores() {
-        const scores = {};
-        for (const team of TEAMS) scores[team] = 0;
-        const pointsTable = [10, 8, 6, 5, 4, 3, 2, 1];
-        const standings = getStandings();
-        for (let i = 0; i < standings.length; i++) {
-            scores[standings[i].team] += pointsTable[i] || 0;
+    function isPaused()           { return paused; }
+    function setSpeed(mult)       { speedMultiplier = mult; }
+    function getSpeedMultiplier() { return speedMultiplier; }
+    function getPhase()           { return phase; }
+    function getSim()             { return sim; }
+    function getPreSim()          { return preSim; }
+    function getSeed()            { return seed; }
+    function getCars()            { return sim ? sim.cars : []; }
+    function getStandings()       { return sim ? (sim.state.order || sim.cars) : []; }
+    function getLeader()          { return sim ? sim.state.leader : null; }
+    function getTotalLaps()       { return totalLaps; }
+    function setTotalLaps(n)      { totalLaps = Math.max(3, Math.min(60, n | 0)); }
+    function isFinished()         { return phase === PHASES.RESULTS || phase === PHASES.COOLDOWN; }
+    function skipToResults() {
+        if (phase === PHASES.RESULTS) return;
+        while (sim.phase !== 'finished') {
+            if (sim.phase === 'grid') sim.beginRace();
+            sim.step();
         }
-        return TEAMS.map(t => ({
-            team: t, points: scores[t], colors: CarSVG.TEAM_COLORS[t]
-        })).sort((a, b) => b.points - a.points);
+        eventCursor = preSim.events.length;
+        Commentary.cut();
+        _to(PHASES.RESULTS);
+        _award();
     }
-
-    function getBestLaps() {
-        return [...cars]
-            .filter(c => c.bestLapTime < Infinity)
-            .sort((a, b) => a.bestLapTime - b.bestLapTime)
-            .slice(0, 5);
-    }
-
-    function setSpeed(mult)      { speedMultiplier = mult; }
-    function getCars()           { return cars; }
-    function getLeader()         { return leader; }
-    function getRaceTime()       { return phaseTimer; }
-    function isStarted()         { return phase === 'race' || phase === 'qualifying'; }
-    function isFinished()        { return (phase === 'race' || phase === 'race_end') && finishOrder.length === cars.length; }
-    function getTotalLaps()      { return TOTAL_LAPS; }
-    function getSpeedMultiplier(){ return speedMultiplier; }
-    function getPhase()          { return phase; }
 
     return {
-        init, update, draw, getStandings, getTeamScores, getBestLaps,
-        setSpeed, getCars, getLeader, getRaceTime, isStarted, isFinished,
-        getTotalLaps, getSpeedMultiplier, getPhase
+        init, update, drawWorld, drawScreen, PHASES,
+        setPaused, isPaused,
+        setSpeed, getSpeedMultiplier, getPhase, getSim, getPreSim, getSeed,
+        getCars, getStandings, getLeader, getTotalLaps, setTotalLaps,
+        isFinished, skipToResults, getLive,
     };
 })();

@@ -7,36 +7,128 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="game-container">
-        <canvas id="trackCanvas"></canvas>
-        <div id="sidebar">
+    <canvas id="trackCanvas"></canvas>
+
+    <button id="panel-toggle" title="Toggle control panel (H)">☰</button>
+
+    <div id="boot">
+        <div class="boot-inner">
             <h1>ZERO RACE</h1>
-            <div id="race-info">
-                <div class="race-stat">
-                    <span class="label">Lap</span>
-                    <span id="race-lap" class="value">1 / 10</span>
-                </div>
-                <div class="race-stat">
-                    <span class="label">Leader</span>
-                    <span id="race-leader" class="value">--</span>
-                </div>
-            </div>
-            <h2>STANDINGS</h2>
-            <div id="standings"></div>
-            <h2>TEAM SCORES</h2>
-            <div id="team-scores"></div>
-            <h2>BEST LAPS</h2>
-            <div id="best-laps"></div>
-            <div id="controls">
-                <button id="btn-restart">NEW RACE</button>
-            </div>
+            <p>Pick a colour. Cheer. You can't change a thing.</p>
+            <button id="boot-start">START BROADCAST</button>
+            <small>Sound and the radio announcer need one click to begin.</small>
         </div>
     </div>
+
+    <aside id="panel" class="hidden">
+        <header>
+            <h2>CONTROL ROOM</h2>
+            <button id="panel-close" title="Hide (H)">×</button>
+        </header>
+
+        <div class="panel-scroll">
+
+            <section>
+                <h3>Race</h3>
+                <div class="row">
+                    <label for="seed-input">Seed</label>
+                    <input id="seed-input" type="text" placeholder="ZR-XXXXXXX or any word">
+                </div>
+                <div class="row">
+                    <label for="laps-input">Laps</label>
+                    <input id="laps-input" type="number" min="3" max="60" value="14">
+                </div>
+                <div class="btn-row">
+                    <button id="btn-new" class="primary">NEW RACE</button>
+                    <button id="btn-replay">REPLAY SEED</button>
+                </div>
+                <div class="btn-row">
+                    <button id="btn-pause">⏸ PAUSE</button>
+                    <button id="btn-skip">⏭ SKIP TO RESULT</button>
+                </div>
+                <div class="row">
+                    <label>Speed</label>
+                    <div class="seg" id="speed-seg">
+                        <button data-speed="0.5">0.5×</button>
+                        <button data-speed="1" class="on">1×</button>
+                        <button data-speed="2">2×</button>
+                        <button data-speed="4">4×</button>
+                    </div>
+                </div>
+                <p class="hint" id="seed-hint"></p>
+            </section>
+
+            <section>
+                <h3>Broadcast</h3>
+                <div class="row toggle">
+                    <label for="tgl-announcer">Radio announcer (TTS)</label>
+                    <input id="tgl-announcer" type="checkbox" checked>
+                </div>
+                <div class="row">
+                    <label for="voice-select">Voice</label>
+                    <select id="voice-select"></select>
+                </div>
+                <div class="row">
+                    <label for="rate-input">Speech rate</label>
+                    <input id="rate-input" type="range" min="0.8" max="1.6" step="0.05" value="1.12">
+                </div>
+                <div class="row toggle">
+                    <label for="tgl-sfx">Sound effects</label>
+                    <input id="tgl-sfx" type="checkbox" checked>
+                </div>
+                <div class="row">
+                    <label for="vol-input">Volume</label>
+                    <input id="vol-input" type="range" min="0" max="1" step="0.05" value="0.55">
+                </div>
+                <div class="row toggle">
+                    <label for="tgl-camera">Broadcast camera</label>
+                    <input id="tgl-camera" type="checkbox" checked>
+                </div>
+            </section>
+
+            <section>
+                <h3>Garage</h3>
+                <p class="hint">Development points are earned every race. Spend them here, or let
+                   the viewers decide with the vote box below.</p>
+                <div id="garage"></div>
+            </section>
+
+            <section>
+                <h3>Viewer votes</h3>
+                <p class="hint">Paste YouTube comments. Each line that names one team and one
+                   upgrade counts as a vote.</p>
+                <textarea id="vote-box" rows="6" placeholder="blue brakes&#10;RED engine please&#10;green tyres!!&#10;yellow pit crew"></textarea>
+                <div class="btn-row">
+                    <button id="btn-tally" class="primary">TALLY &amp; APPLY VOTES</button>
+                </div>
+                <div id="vote-result" class="hint"></div>
+            </section>
+
+            <section>
+                <h3>Championship</h3>
+                <div id="championship"></div>
+                <div class="btn-row">
+                    <button id="btn-reset-season" class="danger">RESET SEASON</button>
+                </div>
+            </section>
+
+        </div>
+    </aside>
+
+    <script src="rng.js"></script>
+    <script src="upgrades.js"></script>
     <script src="track.js"></script>
     <script src="effects.js"></script>
     <script src="car-svg.js"></script>
     <script src="car.js"></script>
+    <script src="weather.js"></script>
+    <script src="events.js"></script>
     <script src="powerups.js"></script>
+    <script src="sim.js"></script>
+    <script src="commentary.js"></script>
+    <script src="audio.js"></script>
+    <script src="camera.js"></script>
+    <script src="hud.js"></script>
     <script src="race.js"></script>
     <script src="sidebar.js"></script>
     <script src="editor.js"></script>
