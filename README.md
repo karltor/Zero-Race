@@ -79,7 +79,7 @@ control points to reshape the circuit by hand.
 lap and one timed lap. The out-lap is fast-forwarded; the flying lap — the only
 part that decides anything — runs in real time. Fastest sets pole.
 
-**The race.** 14 laps by default, with:
+**The race.** 10 laps by default (about three and a half minutes), with:
 
 - **Tyres.** Soft / medium / hard, plus intermediates and full wets. Grip is
   `compound × wear × surface × damage`, and it drives corner speed *and*

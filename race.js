@@ -38,7 +38,7 @@ const Race = (() => {
     let eventCursor = 0;
     let speedMultiplier = 1;
     let awarded = null;          // Garage breakdown, computed once at the flag
-    let totalLaps = 14;
+    let totalLaps = 10;
     let raceNumber = 1;
     let onResults = null;
     let paused = false;

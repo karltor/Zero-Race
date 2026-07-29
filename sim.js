@@ -25,7 +25,7 @@ const Sim = (() => {
 
     function create(seed, options = {}) {
         const opts = Object.assign({
-            totalLaps: 14,
+            totalLaps: 10,
             mods: null,           // { team: modifiers } — defaults to the saved garage
             effects: true,        // false for headless runs
             qualifying: true,

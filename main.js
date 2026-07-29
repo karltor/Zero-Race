@@ -167,7 +167,7 @@
         const seedParam = params.get('seed');
         const lapsParam = parseInt(params.get('laps'), 10);
         const seed = seedParam ? Rng.fromCode(seedParam) : Rng.randomSeed();
-        const laps = Number.isFinite(lapsParam) ? Math.max(3, Math.min(60, lapsParam)) : 14;
+        const laps = Number.isFinite(lapsParam) ? Math.max(3, Math.min(60, lapsParam)) : 10;
 
         document.getElementById('laps-input').value = laps;
 
