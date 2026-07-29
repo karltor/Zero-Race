@@ -48,7 +48,7 @@ const Race = (() => {
     const QUAL_RESULT_MS = 8600;
     const COUNTDOWN_MS = 5200;
     const COOLDOWN_MS  = 7000;
-    const QUAL_SPEED   = 3.0;
+    const QUAL_WARMUP_SPEED = 5.0;   // out-lap only; the flying lap runs 1:1
 
     // -------------------------------------------------------------------------
     // Setup
@@ -85,6 +85,12 @@ const Race = (() => {
         });
         Commentary.setLiveProvider(getLive);
 
+        // 3b. Plan the camera the same way: pick the handful of moments worth
+        //     a close-up, well ahead of time, instead of chasing every pass.
+        const shots = Camera.buildPlan(preSim.events, preSim.result.duration);
+        console.log(`[zero-race] camera plan: ${shots.length} close-ups over ` +
+                    `${(preSim.result.duration / 1000).toFixed(0)}s`);
+
         // 4. The live run.
         sim = Sim.create(seed, { totalLaps, mods, effects: true });
 
@@ -107,9 +113,8 @@ const Race = (() => {
         if (paused) {
             Effects.update(dt);
             Camera.update(dt, {
-                order: sim.state.order || sim.cars, cars: sim.cars,
-                phase: 'other', safetyCar: sim.state.safetyCar, leader: sim.state.leader,
-                wide: Camera.getMode() === 'wide',
+                cars: sim.cars, order: sim.state.order || sim.cars,
+                simTime: sim.state.simTime, wide: false,
             });
             return;
         }
@@ -129,14 +134,19 @@ const Race = (() => {
                 }
                 break;
 
-            case PHASES.QUALIFYING:
-                _advance(dtMs, QUAL_SPEED * speedMultiplier);
+            case PHASES.QUALIFYING: {
+                // Fast-forward the out-lap, then drop to real time so the
+                // flying lap — the only part that decides anything — is
+                // actually watchable.
+                const onFlyingLap = sim.cars.some(c => !c.qualifyingDone && c._qualPhase >= 1);
+                _advance(dtMs, (onFlyingLap ? 1 : QUAL_WARMUP_SPEED) * speedMultiplier);
                 if (sim.phase === 'grid') {
                     _to(PHASES.QUAL_RESULT);
                     const pole = sim.state.qualifyingResults[0];
                     if (pole) Commentary.say(`${pole.car.speechName} takes pole position with a ${(pole.lapTime / 1000).toFixed(2)}.`, 95);
                 }
                 break;
+            }
 
             case PHASES.QUAL_RESULT:
                 Camera.goWide();
@@ -163,7 +173,7 @@ const Race = (() => {
                     const w = sim.state.finishOrder[0];
                     if (w) {
                         Effects.addConfetti(w.x, w.y, 140);
-                        Camera.spotlight([w], 6);
+                        Camera.spotlight([w], 6, 'THE WINNER');
                     }
                 }
                 break;
@@ -194,12 +204,9 @@ const Race = (() => {
         Commentary.update(sim.state.simTime, phase === PHASES.RACE || phase === PHASES.COOLDOWN);
 
         Camera.update(dt, {
-            order: sim.state.order || sim.cars,
             cars: sim.cars,
-            phase: phase === PHASES.RACE || phase === PHASES.COOLDOWN ? 'race'
-                 : phase === PHASES.COUNTDOWN || phase === PHASES.GRID ? 'grid' : 'other',
-            safetyCar: sim.state.safetyCar,
-            leader: sim.state.leader,
+            order: sim.state.order || sim.cars,
+            simTime: sim.state.simTime,
             wide: phase === PHASES.PREVIEW || phase === PHASES.QUAL_RESULT ||
                   phase === PHASES.RESULTS || phase === PHASES.QUAL_INTRO,
         });
@@ -234,36 +241,17 @@ const Race = (() => {
         }
     }
 
-    /** Big moments take the camera. */
+    /**
+     * The camera already knows what is coming (Camera.buildPlan), so events do
+     * not steer it any more — cutting on all forty overtakes was what made the
+     * broadcast strobe. All an event does here is rattle the frame.
+     */
     function _directorCut(e) {
-        const byId = id => sim.cars.find(c => c.id === id);
         const d = e.data || {};
-        switch (e.type) {
-            case 'overtake':
-            case 'lead_change':
-                if (e.significance > 70) Camera.spotlight([byId(d.carId), byId(d.victimId || d.prevId)], 5);
-                break;
-            case 'crash':
-            case 'contact':
-                Camera.spotlight([byId(d.carId), byId(d.otherId)], 4.5);
-                Camera.shake(9 + (d.severity || 0) * 12);
-                break;
-            case 'spin':
-                Camera.spotlight([byId(d.carId)], 4.5);
-                Camera.shake(5);
-                break;
-            case 'dnf':
-            case 'mech_issue':
-                Camera.spotlight([byId(d.carId)], 4);
-                break;
-            case 'pit_enter':
-            case 'pit_exit':
-                if (d.position <= 4) Camera.spotlight([byId(d.carId)], 4.5);
-                break;
-            case 'chequered':
-                Camera.spotlight([byId(d.carId)], 6);
-                break;
-        }
+        if (e.type === 'crash') Camera.shake(9 + (d.severity || 0) * 12);
+        else if (e.type === 'contact') Camera.shake(5);
+        else if (e.type === 'spin') Camera.shake(4);
+        else if (e.type === 'dnf') Camera.shake(7);
     }
 
     function _updateAudio() {

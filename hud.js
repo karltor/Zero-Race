@@ -244,7 +244,7 @@ const Hud = (() => {
             // Tyre pill
             const tx = x + 132 * S;
             ctx.beginPath();
-            ctx.arc(tx, ry + rowH / 2, 8 * S, 0, Math.PI * 2);
+            ctx.arc(tx, ry + rowH / 2 - 3 * S, 8 * S, 0, Math.PI * 2);
             ctx.strokeStyle = c.tyre.color;
             ctx.lineWidth = 2.4 * S;
             ctx.stroke();
@@ -253,15 +253,23 @@ const Hud = (() => {
             ctx.fillStyle = c.tyre.color;
             ctx.font = `bold ${9 * S}px ${FONT}`;
             ctx.textAlign = 'center';
-            ctx.fillText(c.tyre.short, tx, ry + rowH / 2 + 0.5);
+            ctx.fillText(c.tyre.short, tx, ry + rowH / 2 - 2.5 * S);
 
             // Wear bar under the pill
             const wearW = 16 * S;
             ctx.fillStyle = 'rgba(255,255,255,0.14)';
-            ctx.fillRect(tx - wearW / 2, ry + rowH - 5 * S, wearW, 2.2 * S);
+            ctx.fillRect(tx - wearW / 2, ry + rowH - 3.5 * S, wearW, 2.2 * S);
             const wf = Math.min(1, c.tyreWear);
             ctx.fillStyle = wf > 0.8 ? '#ff5252' : wf > 0.55 ? '#ffb300' : '#4ade80';
-            ctx.fillRect(tx - wearW / 2, ry + rowH - 5 * S, wearW * (1 - wf), 2.2 * S);
+            ctx.fillRect(tx - wearW / 2, ry + rowH - 3.5 * S, wearW * (1 - wf), 2.2 * S);
+
+            // Stops made / planned — the strategy at a glance
+            if (c.strategy) {
+                ctx.textAlign = 'center';
+                ctx.font = `${9.5 * S}px ${FONT}`;
+                ctx.fillStyle = 'rgba(255,255,255,0.45)';
+                ctx.fillText(`${c.pitStops}/${c.strategy.stops}`, tx, ry + rowH - 9 * S);
+            }
 
             // Status flags
             let fx = x + 150 * S;
@@ -269,6 +277,7 @@ const Hud = (() => {
             ctx.font = `bold ${9 * S}px ${FONT}`;
             if (c.drsActive)  { ctx.fillStyle = '#4fe3ff'; ctx.fillText('DRS', fx, ry + rowH / 2); fx += 24 * S; }
             if (c.inPitLane)  { ctx.fillStyle = '#ffd54f'; ctx.fillText('PIT', fx, ry + rowH / 2); fx += 22 * S; }
+            else if (c.pitState === 'requested') { ctx.fillStyle = '#ffd54f'; ctx.fillText('BOX', fx, ry + rowH / 2); fx += 22 * S; }
             if (c.damage > 0.35 && !c.retired) { ctx.fillStyle = '#ff8a65'; ctx.fillText('DMG', fx, ry + rowH / 2); }
 
             // Interval
@@ -358,14 +367,10 @@ const Hud = (() => {
 
     function drawShotLabel(ctx, sim) {
         const subs = Camera.getSubjects();
-        if (!subs.length || Camera.getZoom() < 1.15) return;
+        const planned = Camera.getLabel();
+        if (!subs.length || !planned) return;
 
-        let label;
-        if (subs.length === 1) label = `LEADER  ·  ${subs[0].name}`;
-        else {
-            const p = Math.min(...subs.map(c => c.position));
-            label = `BATTLE FOR P${p}`;
-        }
+        const label = subs.length === 1 ? `${planned}  ·  ${subs[0].name}` : planned;
 
         ctx.save();
         ctx.textBaseline = 'middle';
@@ -489,23 +494,8 @@ const Hud = (() => {
     }
 
     // -------------------------------------------------------------------------
-    // Cut flash — a subtle white wipe when the director changes shot
-    // -------------------------------------------------------------------------
-
-    function drawCutFlash(ctx) {
-        const f = Camera.getCutFlash();
-        if (f <= 0.01) return;
-        ctx.save();
-        ctx.globalAlpha = f * 0.13;
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, W, H);
-        ctx.restore();
-    }
-
-    // -------------------------------------------------------------------------
 
     function draw(ctx, sim, meta) {
-        drawCutFlash(ctx);
         drawTopBar(ctx, sim, meta);
         drawTower(ctx, sim);
         drawShotLabel(ctx, sim);

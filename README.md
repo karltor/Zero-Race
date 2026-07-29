@@ -76,7 +76,8 @@ control points to reshape the circuit by hand.
 ## What happens during a race
 
 **Qualifying.** All eight cars run alone, spread around the lap: one warm-up
-lap and one timed lap. Fastest sets pole. Grid order is locked in.
+lap and one timed lap. The out-lap is fast-forwarded; the flying lap — the only
+part that decides anything — runs in real time. Fastest sets pole.
 
 **The race.** 14 laps by default, with:
 
@@ -85,9 +86,17 @@ lap and one timed lap. Fastest sets pole. Grid order is locked in.
   braking — a worn tyre in the rain is slow and hard to stop, which is exactly
   when the overtakes happen. Each car picks a strategy by weighing pit-stop
   time against compound pace.
+- **Strategy.** Every car plans its race on the grid: how many stops, on which
+  compounds, on roughly which laps — scored by total race time, weighing pit
+  loss against compound pace, with the aggressive drivers discounting stops.
+  The plan then reacts: a safety car makes a stop cheap and brings people in
+  early, rain forces a compound change, and a car being undercut by the rival
+  in front will pit to defend. The stops-made/planned figure sits in the
+  timing tower.
 - **Pit stops.** A real pit lane alongside the start/finish straight with a
-  speed limit and eight team boxes. Stop time depends on the team's pit crew
-  upgrade, plus repairs if the car is damaged.
+  speed limit and eight team boxes. Cars queue nose to tail down the lane, and
+  a car up on jacks blocks it — nobody drives through anybody. Stop time
+  depends on the team's pit crew upgrade, plus repairs if the car is damaged.
 - **DRS.** Detection points before each long straight. Within one second of the
   car ahead, the rear wing opens: +14% top speed through the zone. Disabled in
   the wet and under the safety car.
@@ -104,10 +113,15 @@ lap and one timed lap. Fastest sets pole. Grid order is locked in.
   Pads only light up in the stretch of track that still has cars on it, and the
   leader can never take one, so they work purely as catch-up.
 
-**Broadcast camera.** A director scores every battle on track — closeness,
-position fought over, DRS, incidents — cuts to the best one, holds the shot long
-enough to read it, and cuts away when something better happens. Big moments
-(crashes, passes for the lead, retirements) take the camera immediately.
+**Broadcast camera.** Planned, not reactive. Because the race is already
+simulated, the director picks the ten-or-so moments worth a close-up *before*
+the first frame is drawn and schedules them, so the camera eases in a second and
+a half **ahead** of the move — exactly like a real operator already standing in
+the corner. It holds through the moment, then eases back out. The resting state
+is the full-circuit wide shot.
+
+Cutting to all forty overtakes, which is what the first version did, reads as a
+strobe light. One considered close-up every fifteen seconds reads as television.
 
 ---
 
@@ -179,13 +193,13 @@ browser profile — or press **RESET SEASON** to start over.
 |---|---|
 | `rng.js` | Seeded PRNG (mulberry32), seed codes, independent sub-streams |
 | `track.js` | Procedural circuit, straight/DRS/sector/pit analysis, rendering |
+| `camera.js` | Broadcast director: builds the shot plan, eases in and out |
 | `weather.js` | Forecast rolled from the seed, rain vs. track wetness |
 | `car.js` | Physics, tyres, damage, DRS, pit-lane state machine, racing AI |
 | `powerups.js` | Boost pads, oil slicks, passive catch-up |
 | `events.js` | Timestamped event log, hindsight scoring, cluster thinning |
 | `sim.js` | The deterministic simulation; qualifying, race, safety car, results |
 | `commentary.js` | Line templates, speech queue, Web Speech announcer |
-| `camera.js` | Broadcast director: shot selection, cuts, zoom, shake |
 | `hud.js` | Timing tower, lap counter, minimap, subtitles, captions, ticker |
 | `effects.js` | Skid marks, spray, smoke, sparks, confetti, rain overlay |
 | `audio.js` | Procedural WebAudio engine bed and sound effects |
@@ -197,6 +211,13 @@ browser profile — or press **RESET SEASON** to start over.
 
 Everything runs in the browser. There is no server, no build, and no network
 call at runtime.
+
+### The circuit is bigger than the screen
+
+Tracks are generated at 1.55× the viewport. A circuit confined to the screen has
+to be either oval-shaped or made of corners too tight to drive — there is simply
+nowhere to put a real sequence of bends. The wide shot scales the whole thing to
+fit; the director's close-ups are what the extra resolution is for.
 
 ### Keeping it deterministic
 
