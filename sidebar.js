@@ -101,7 +101,7 @@ const Controls = (() => {
 
     function _laps() {
         const v = parseInt($('laps-input').value, 10);
-        return Number.isFinite(v) ? Math.max(3, Math.min(60, v)) : 14;
+        return Number.isFinite(v) ? Math.max(3, Math.min(60, v)) : 10;
     }
 
     function _populateVoices() {

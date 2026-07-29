@@ -12,7 +12,12 @@
 
     /** The track is pre-rendered at this multiple of world resolution so it
      *  still looks sharp when the broadcast camera zooms in. */
-    const TRACK_SCALE = 2;
+    const TRACK_SCALE = 1.6;
+
+    /** The circuit is generated larger than the viewport. The wide shot scales
+     *  it to fit; close-ups zoom in. A track confined to the screen has to be
+     *  either tiny-radius or oval-shaped — neither reads as a real circuit. */
+    const WORLD_SCALE = 1.55;
 
     let trackImage = null;
     let lastTimestamp = 0;
@@ -51,7 +56,7 @@
         // Grass texture
         c.save();
         c.globalAlpha = 0.06;
-        for (let i = 0; i < 2600; i++) {
+        for (let i = 0; i < 4200; i++) {
             const gx = Math.random() * w;
             const gy = Math.random() * h;
             c.fillStyle = Math.random() > 0.5 ? '#194a12' : '#3d8a32';
@@ -89,7 +94,10 @@
     // -------------------------------------------------------------------------
 
     function startRace(seed, laps) {
-        world = { w: canvas.width, h: canvas.height };
+        world = {
+            w: Math.round(canvas.width * WORLD_SCALE),
+            h: Math.round(canvas.height * WORLD_SCALE),
+        };
         Race.setTotalLaps(laps);
         Race.init(seed, {
             worldW: world.w,
@@ -99,11 +107,13 @@
                 Effects.init(world.w, world.h);
                 rebuildTrackImage();
                 Hud.buildMinimap(210, 150);
+                // Must happen before Race.init builds the shot plan — init()
+                // resets the camera, plan included.
+                Camera.init(canvas.width, canvas.height, world);
             },
             onResults: () => Controls.onRaceResult(),
         });
 
-        Camera.init(canvas.width, canvas.height, world);
         Hud.resize(canvas.width, canvas.height);
         Controls.setSeedLabel(seed, `${Track.getName()} · ${laps} laps`);
 
@@ -157,7 +167,7 @@
         const seedParam = params.get('seed');
         const lapsParam = parseInt(params.get('laps'), 10);
         const seed = seedParam ? Rng.fromCode(seedParam) : Rng.randomSeed();
-        const laps = Number.isFinite(lapsParam) ? Math.max(3, Math.min(60, lapsParam)) : 14;
+        const laps = Number.isFinite(lapsParam) ? Math.max(3, Math.min(60, lapsParam)) : 10;
 
         document.getElementById('laps-input').value = laps;
 

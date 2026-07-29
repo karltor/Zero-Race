@@ -25,7 +25,7 @@ const Sim = (() => {
 
     function create(seed, options = {}) {
         const opts = Object.assign({
-            totalLaps: 14,
+            totalLaps: 10,
             mods: null,           // { team: modifiers } — defaults to the saved garage
             effects: true,        // false for headless runs
             qualifying: true,
@@ -119,8 +119,10 @@ const Sim = (() => {
                 car.reset();
                 car.gridPosition = gridPos;
                 car.position = gridPos;
-                // Free tyre choice: the front runners gamble on softs.
-                car.fitTyre(startCompound || car.chooseCompound({ weather, totalLaps: state.totalLaps }));
+                // Everyone works out a full race plan on the grid; the opening
+                // compound comes from that plan unless the track is wet.
+                const plan = car.planStrategy({ totalLaps: state.totalLaps, weather });
+                car.fitTyre(startCompound || plan.compounds[0] || 'medium');
                 const side = i % 2 === 0 ? -1 : 1;
                 car.placeOnTrack(Track.wrap(-0.008 - i * 0.017), side * 20);
                 car.lap = -1;   // the standing-start line crossing must not count as a lap

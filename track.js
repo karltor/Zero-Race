@@ -12,7 +12,7 @@
  */
 const Track = (() => {
     let points = [];
-    let trackWidth = 150;
+    let trackWidth = 132;
     let finishIndex = 0;
     let totalLength = 0;
     let _rawCtrl   = [];   // original control points before Chaikin (editable by editor)
@@ -53,28 +53,109 @@ const Track = (() => {
         let validAttempt = -1;
         let rejCtrl = 0, rejEdge = 0;
         for (let attempt = 0; attempt < 40; attempt++) {
-            const numCtrl = 9 + Math.floor(R.next() * 6);   // 9-14 control points
+            // Lots of control points is what makes a circuit feel like a
+            // circuit rather than an oval: each one is a potential corner.
+            const numCtrl = 16 + Math.floor(R.next() * 5);   // 16-20
             const ctrl = [];
-            // Radius range narrows as attempts fail: wild shapes first, then
-            // progressively rounder ones, so generation always terminates.
-            const spread = 0.58 * Math.max(0.35, 1 - attempt / 30);
-            const base = 0.90 - spread;
+            // Wide radius variation gives the mix of hairpins, sweepers and
+            // straights. Keep it wide on every attempt — when a layout fails
+            // we push the control points further apart instead of rounding
+            // the shape off, which is what flattened tracks into ovals.
+            // ── Layout ───────────────────────────────────────────────────
+            // Independent random radii give a scribble; a *smooth* random walk
+            // gives flowing sequences of corners, which is what a circuit is.
+            // Straight sectors are then carved out explicitly.
+            // Late attempts tame the radius variation towards a rounder shape.
+            // Early attempts keep the full range, so a normal circuit is as
+            // twisty as the settings allow and only the awkward seeds — the
+            // ones that keep self-crossing — get smoothed out.
+            const tame = Math.max(0, Math.min(0.97, (attempt - 14) / 18));
+
+            const radii = [];
+            let r = 0.45 + R.next() * 0.35;
+            for (let i = 0; i < numCtrl; i++) {
+                r += R.gauss() * 0.17 * (1 - tame);
+                r = Math.max(0.30, Math.min(0.92, r));
+                radii.push(r);
+            }
+            // Close the loop by removing the walk's net drift, spread evenly
+            // around the lap. Blending towards the first radius instead would
+            // flatten the middle of the circuit back into an oval.
+            const drift = radii[numCtrl - 1] - radii[0];
+            for (let i = 0; i < numCtrl; i++) {
+                radii[i] = Math.max(0.30, Math.min(0.93, radii[i] - drift * (i / (numCtrl - 1))));
+            }
+
             for (let i = 0; i < numCtrl; i++) {
                 const angle = (i / numCtrl) * Math.PI * 2;
-                const rVar = base + R.next() * spread;
                 ctrl.push({
-                    x: cx + Math.cos(angle) * rx * rVar,
-                    y: cy + Math.sin(angle) * ry * rVar
+                    x: cx + Math.cos(angle) * rx * radii[i],
+                    y: cy + Math.sin(angle) * ry * radii[i]
                 });
             }
 
-            // Push apart adjacent control points that ended up too close.
-            for (let iter = 0; iter < 6; iter++) {
+            // Carve two or three straights: pull the interior points of a
+            // sector onto the line between its ends. Somewhere to run DRS and
+            // actually complete an overtake.
+            const straightCount = tame > 0.55 ? 0 : 2 + (R.next() < 0.4 ? 1 : 0);
+            // Straights must not eat the circuit: cap them at ~40% of the
+            // control points or everything in between stops being a corner.
+            const maxClaimed = Math.round(numCtrl * 0.40);
+            const claimed = new Set();
+            let made = 0;
+            for (let attemptS = 0; attemptS < 20 && made < straightCount; attemptS++) {
+                const span = 3;
+                const start = Math.floor(R.next() * numCtrl);
+                if (claimed.size + span + 1 > maxClaimed) break;
+
+                let free = true;
+                // Leave a gap either side so two straights never merge into one.
+                for (let j = -1; j <= span + 1; j++) {
+                    if (claimed.has(((start + j) % numCtrl + numCtrl) % numCtrl)) free = false;
+                }
+                if (!free) continue;
+
+                const a = ctrl[start], b = ctrl[(start + span) % numCtrl];
+                for (let j = 1; j < span; j++) {
+                    const f = j / span;
+                    ctrl[(start + j) % numCtrl] = { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+                }
+                for (let j = 0; j <= span; j++) claimed.add((start + j) % numCtrl);
+                made++;
+            }
+
+            // Pull a couple of unclaimed points hard towards the centre. These
+            // become the slow corners — the hairpins and tight complexes that
+            // make a circuit memorable instead of one long sweeping loop.
+            if (tame < 0.4) {
+                const tight = 1 + Math.floor(R.next() * 2);
+                for (let k = 0, tries = 0; k < tight && tries < 18; tries++) {
+                    const i = Math.floor(R.next() * numCtrl);
+                    if (claimed.has(i)) continue;
+                    // Never next to a straight: a hairpin right at the end of
+                    // one leaves no braking zone and the AI just runs wide.
+                    if (claimed.has((i + 1) % numCtrl) || claimed.has((i - 1 + numCtrl) % numCtrl)) continue;
+                    const pull = 0.52 + R.next() * 0.22;
+                    ctrl[i] = { x: cx + (ctrl[i].x - cx) * pull, y: cy + (ctrl[i].y - cy) * pull };
+                    claimed.add(i);
+                    k++;
+                }
+            }
+
+            // Adjacent control points closer than this pinch the inner edge
+            // shut once the spline is offset by half the track width.
+            // Capped: an ever-growing spacing requirement makes the push-apart
+            // loop below inflate the whole layout instead of nudging one pair,
+            // which distorts the shape and creates the very crossings it was
+            // meant to avoid.
+            const minSpacing = trackWidth * Math.min(1.70, 1.20 + attempt * 0.02);
+
+            for (let iter = 0; iter < 8; iter++) {
                 for (let i = 0; i < ctrl.length; i++) {
                     const next = ctrl[(i + 1) % ctrl.length];
                     const dx = next.x - ctrl[i].x, dy = next.y - ctrl[i].y;
                     const d = Math.sqrt(dx * dx + dy * dy);
-                    if (d < trackWidth * 1.25) {
+                    if (d < minSpacing) {
                         const mx = (ctrl[i].x + next.x) / 2;
                         const my = (ctrl[i].y + next.y) / 2;
                         ctrl[i].x += (ctrl[i].x - mx) * 0.4;

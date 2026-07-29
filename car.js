@@ -160,7 +160,8 @@ class Car {
         this.stints = [];
         this.pitStops = 0;
 
-        // Pit state machine
+        // Strategy + pit state machine
+        this.strategy = null;         // { stops, compounds, stopLaps, nextStop }
         this.pitState = 'none';       // none | requested | inlane | stopped | exiting
         this.pitTimer = 0;
         this.pitBox = 0;
@@ -274,11 +275,83 @@ class Car {
         return u;
     }
 
+    /**
+     * Work out a race strategy before the start: how many stops, on which
+     * compounds, and roughly which laps. Evaluated by total race time —
+     * softer rubber is quicker per lap but costs an extra trip down the lane.
+     *
+     * Stored on `this.strategy` and re-planned after every stop, so a safety
+     * car or a rain shower reshapes the rest of the race rather than sticking
+     * to a plan that no longer makes sense.
+     */
+    planStrategy(ctx, fromLap = 0) {
+        const laps = ctx.totalLaps;
+        const lapSec = (this.bestLapTime && this.bestLapTime < Infinity ? this.bestLapTime : 21000) / 1000;
+        const lapsLeft = Math.max(1, laps - fromLap);
+
+        // Cost of one stop: the lane transit penalty plus the stationary time.
+        const pit = Track.getPit();
+        const laneFrac = pit ? Track.forwardDist(pit.entry, pit.exit) : 0.2;
+        const laneLen = laneFrac * Track.getTrackLength();
+        const transitLoss = laneLen / (pit ? pit.speedLimit : 105) - laneLen / 240;
+        const stopLoss = Math.max(4, transitLoss) + 2.35 * (1 + this.mods.pitTime);
+
+        // Real wear runs faster than the nominal rate because of the load
+        // factor in _updateTyres (speed + braking). Plan against the number
+        // the car will actually see, or every strategy is a lap too optimistic.
+        const LOAD = 1.35;
+        const lifeLaps = c =>
+            (TYRE_LIFE / (TYRES[c].wear * this.profile.tyreCare * (1 + this.mods.tyreWear) * LOAD)) / lapSec;
+        const paceLoss = c => (1.055 - TYRES[c].grip) * lapSec * 0.42;
+
+        let best = null;
+        for (let stops = 0; stops <= 3; stops++) {
+            const stints = stops + 1;
+            const per = lapsLeft / stints;
+            const compounds = [];
+            let total = stops * stopLoss;
+            let feasible = true;
+
+            for (let k = 0; k < stints; k++) {
+                // Softest compound that survives the stint with a little margin.
+                const fit = ['soft', 'medium', 'hard'].find(c => lifeLaps(c) * 0.94 >= per);
+                if (!fit) { feasible = false; break; }
+                compounds.push(fit);
+                total += per * paceLoss(fit);
+            }
+            if (!feasible) continue;
+
+            // Aggressive drivers value track position less and pace more.
+            const bias = (this.profile.aggression - 0.5) * stops * 1.6;
+            const score = total - bias + this._rng.float(-1.5, 1.5);
+            if (!best || score < best.score) best = { score, stops, compounds, per };
+        }
+
+        if (!best) best = { stops: 1, compounds: ['hard', 'hard'], per: lapsLeft / 2 };
+
+        const stopLaps = [];
+        for (let k = 1; k <= best.stops; k++) {
+            stopLaps.push(Math.round(fromLap + best.per * k));
+        }
+
+        this.strategy = {
+            stops: best.stops,
+            compounds: best.compounds,
+            stopLaps,
+            nextStop: 0,
+            plannedFrom: fromLap,
+        };
+        return this.strategy;
+    }
+
     /** Which compound this car would fit right now. */
     chooseCompound(ctx) {
         const w = ctx.weather ? ctx.weather.state.wetness : 0;
         if (w > 0.62) return 'wet';
         if (w > 0.28) return 'inter';
+        if (this.strategy && this.strategy.compounds[this.strategy.nextStop + 1]) {
+            return this.strategy.compounds[this.strategy.nextStop + 1];
+        }
         const lapsLeft = Math.max(1, ctx.totalLaps - Math.max(0, this.lap));
         const lapSec = (this.bestLapTime && this.bestLapTime < Infinity ? this.bestLapTime : 13000) / 1000;
         const secondsLeft = lapsLeft * lapSec;
@@ -398,15 +471,38 @@ class Car {
 
         // ── Decide ──
         if (this.pitState === 'none' && this.lap >= 1 && this.lap < ctx.totalLaps - 1 && !this.retired) {
+            const st = this.strategy;
             const urgency = this.tyreUrgency(ctx.weather);
-            // Under a safety car everyone dives in — the stop is nearly free.
-            const scBonus = (ctx.safetyCar && ctx.safetyCar.active) ? 0.35 : 0;
-            if (urgency + scBonus >= 1) {
+            const wet = ctx.weather ? ctx.weather.state.wetness : 0;
+            const onWets = this.tyre.key === 'wet' || this.tyre.key === 'inter';
+            const stintFrac = Math.min(1.5, this.tyreWear / Math.max(0.2, this.pitThreshold));
+
+            let box = false;
+            let reason = 'tyres';
+
+            // Damage or the wrong rubber for the conditions: come in now.
+            if (this.damage > 0.55) { box = true; reason = 'repairs'; }
+            else if (wet > 0.34 && !onWets) { box = true; reason = 'weather'; }
+            else if (wet < 0.12 && onWets && this.lap >= 2) { box = true; reason = 'weather'; }
+            // The tyres are simply finished.
+            else if (urgency >= 1) { box = true; }
+            // The plan says this is the lap.
+            else if (st && st.nextStop < st.stops && this.lap >= st.stopLaps[st.nextStop]) { box = true; reason = 'strategy'; }
+            // A safety car makes a stop far cheaper — take it if the stint is
+            // far enough along to be worth sacrificing.
+            else if (ctx.safetyCar && ctx.safetyCar.active && stintFrac > 0.38 &&
+                     st && st.nextStop < st.stops) { box = true; reason = 'safety car'; }
+            // Undercut: the car we are chasing has just pitted and we are close
+            // enough that fresh tyres would put us out in front of them.
+            else if (this.ahead && this.ahead.pitState !== 'none' && this.gapAheadSec < 2.5 &&
+                     stintFrac > 0.55 && st && st.nextStop < st.stops) {
+                box = true; reason = 'undercut';
+            }
+
+            if (box) {
                 this.pitState = 'requested';
                 this.nextCompound = this.chooseCompound(ctx);
-                this._pitReason = this.damage > 0.55 ? 'repairs'
-                                : (ctx.weather && ctx.weather.state.wetness > 0.34 && this.tyre.key !== 'wet' && this.tyre.key !== 'inter') ? 'weather'
-                                : 'tyres';
+                this._pitReason = reason;
             }
         }
 
@@ -434,6 +530,12 @@ class Car {
                 this.pitStops++;
                 this.pitState = 'exiting';
                 this.speed = 25;
+                // Re-plan from here: a safety car stop or a weather gamble
+                // changes what the rest of the race should look like.
+                if (this.strategy) this.strategy.nextStop++;
+                if (!this.strategy || this.strategy.nextStop >= this.strategy.stops) {
+                    this.planStrategy(ctx, Math.max(0, this.lap));
+                }
             }
         }
 
@@ -732,6 +834,17 @@ class Car {
         this.braking = false;
         let target = limit;
 
+        // Follow the car in front down the lane — a pit lane is single file.
+        for (const other of ctx.cars) {
+            if (other === this || !other.inPitLane || other.retired) continue;
+            const gap = Track.forwardDist(this.progress, other.progress) * Track.getTrackLength();
+            if (gap <= 0 || gap > 70) continue;
+            // Ignore cars serving in a box we have already passed or not reached.
+            if (other.pitState === 'stopped' && Math.abs(other.pitBox - this.pitBox) > 1e-6 && gap > 46) continue;
+            target = Math.min(target, gap < 40 ? 0 : limit * ((gap - 40) / 34));
+            if (gap < 40) this.braking = true;
+        }
+
         if (this.pitState === 'inlane') {
             const distPx = Track.forwardDist(this.progress, this.pitBox) * Track.getTrackLength();
             if (distPx < 130) target = Math.min(target, Math.sqrt(Math.max(0, 2 * 260 * Math.max(0, distPx - 4))));
@@ -877,12 +990,11 @@ class Car {
     // -------------------------------------------------------------------------
 
     resolveCollisions(ctx) {
-        if (this.pitState === 'stopped') return;
+        const iAmParked = this.pitState === 'stopped';
         for (const other of ctx.cars) {
             if (other === this || other.retired) continue;
             // Cars in the pit lane cannot touch cars on the circuit.
             if (other.inPitLane !== this.inPitLane) continue;
-            if (other.pitState === 'stopped') continue;
 
             const dx = other.x - this.x, dy = other.y - this.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
@@ -891,6 +1003,20 @@ class Car {
 
             const overlap = minDist - dist;
             const nx = dx / dist, ny = dy / dist;
+
+            // A car being serviced has its wheels off — it is immovable, and
+            // anyone arriving has to stop behind it rather than drive through.
+            const otherParked = other.pitState === 'stopped';
+            if (iAmParked && otherParked) continue;
+            if (iAmParked || otherParked) {
+                const mover = iAmParked ? other : this;
+                const sign = iAmParked ? 1 : -1;
+                mover.x += nx * overlap * sign;
+                mover.y += ny * overlap * sign;
+                mover.speed *= 0.55;
+                continue;
+            }
+
             const push = overlap * 0.6;
             this.x -= nx * push; this.y -= ny * push;
             other.x += nx * push; other.y += ny * push;
