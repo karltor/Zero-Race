@@ -167,6 +167,7 @@ class Car {
         this.pitBox = 0;
         this.pitLaneBlend = 0;        // 0 = racing line, 1 = fully in the pit lane
         this.boxBlend = 0;            // 0 = on the through-road, 1 = in the box
+        this.rejoinTimer = 0;         // grace period for merging back onto the circuit
         this.inPitLane = false;
         this.nextCompound = null;
         this._pitReason = '';
@@ -545,6 +546,10 @@ class Car {
             this.pitState = 'none';
             this.inPitLane = false;
             this.nextCompound = null;
+            // The car is still out by the width of the pit lane and needs a
+            // moment to merge back onto the racing line. Until it has, it is
+            // rejoining — not running off the road.
+            this.rejoinTimer = 3.2;
             if (ctx.events) ctx.events.add(ctx.simTime, 'pit_exit', {
                 carId: this.id, name: this.name, speechName: this.speechName, team: this.team,
                 position: this.position, compound: this.tyre.name,
@@ -619,7 +624,13 @@ class Car {
         const cp = Track.getPoints()[this.trackIndex];
         const lateralOffset = (this.x - cp.x) * norm.x + (this.y - cp.y) * norm.y;
         this.lateralOffset = lateralOffset;
-        this.offTrack = !this.inPitLane && Math.abs(lateralOffset) > tw * 0.45;
+
+        if (this.rejoinTimer > 0) this.rejoinTimer = Math.max(0, this.rejoinTimer - dt);
+        // Merging back in from the pit exit is legitimate track position.
+        const rejoining = this.rejoinTimer > 0;
+        // Off-track means past the white line, not near it. Beyond the edge
+        // there is a run-off strip before the hard boundary in applyPhysics.
+        this.offTrack = !this.inPitLane && !rejoining && Math.abs(lateralOffset) > tw * 0.52;
 
         // --- PHYSICS-BASED LOOK-AHEAD ---
         const brakingDecel = 450 * this.stats.braking * (0.55 + 0.45 * grip);
@@ -687,7 +698,7 @@ class Car {
         while (angleErr < -Math.PI) angleErr += Math.PI * 2;
 
         let steer = angleErr * 2.2;
-        if (Math.abs(lateralOffset) > tw * 0.4) steer += -(lateralOffset / tw) * 3.0;
+        if (Math.abs(lateralOffset) > tw * 0.46) steer += -(lateralOffset / tw) * 3.4;
         if (this.oilTimer > 0) steer *= 0.4;
         steer = Math.max(-1, Math.min(1, steer));
 
@@ -944,9 +955,9 @@ class Car {
 
         // Hard boundary — wider while in the pit lane so the lane is reachable.
         const cl = Track.closestPointNear(this.x, this.y, this.trackIndex);
-        const maxDist = this.inPitLane
+        const maxDist = (this.inPitLane || this.rejoinTimer > 0)
             ? Track.getPit().maxOffset + 6
-            : Track.getWidth() * 0.52;
+            : Track.getWidth() * 0.66;
         if (cl.dist > maxDist) {
             const ccp = Track.getPoints()[cl.index];
             const dx = this.x - ccp.x, dy = this.y - ccp.y;
