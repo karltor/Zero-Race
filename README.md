@@ -22,17 +22,29 @@ That determinism is what makes the show work:
 ```
 seed
  ├─▶ Track.generate(seed)          the circuit
- ├─▶ Sim.runHeadless(seed)         the WHOLE race, simulated in ~300 ms
+ ├─▶ Sim.runHeadless(seed)         the WHOLE race, simulated in ~400 ms
  │     └─▶ timestamped event log   every overtake, pit stop, spin, weather change
- │           └─▶ EventLog.analyse  scores each event using hindsight, thins clusters
- │                 └─▶ Commentary  writes every spoken line, in advance
+ │           └─▶ EventLog.analyse  hindsight scoring; marks passes that get reversed
+ │                 ├─▶ Commentary  writes AND schedules every line, in advance
+ │                 └─▶ Camera      picks the moments worth a close-up
  └─▶ Sim.create(seed)              the same race again, this time in real time
        └─▶ lands on identical events at identical timestamps
 ```
 
-The commentator therefore knows the future. When a car takes the lead on lap 9
-it can say *"and that, right there, is the move that wins this race"* — because
-the pass has already been checked against the final classification.
+The commentator therefore knows the future, and it uses that twice.
+
+**For accuracy.** When a car takes the lead on lap 9 it can say *"and that,
+right there, is the move that wins this race"* — the pass has already been
+checked against the final classification. Conversely, when a pass is about to
+be reversed two seconds later, it says *"Red is through — but I don't think
+that's settled!"* instead of announcing a lead change the viewer can already
+see being undone.
+
+**For pacing.** Every line's spoken length is estimated and the whole broadcast
+is laid out offline: the most important moments claim their slot first, the rest
+fit in the gaps or are dropped. The announcer therefore never talks over itself,
+however many things happen at once — there is nothing to interrupt, because the
+schedule has no overlaps by construction.
 
 The live run is verified against the pre-simulation: both produce identical
 event logs.
@@ -93,10 +105,13 @@ part that decides anything — runs in real time. Fastest sets pole.
   early, rain forces a compound change, and a car being undercut by the rival
   in front will pit to defend. The stops-made/planned figure sits in the
   timing tower.
-- **Pit stops.** A real pit lane alongside the start/finish straight with a
-  speed limit and eight team boxes. Cars queue nose to tail down the lane, and
-  a car up on jacks blocks it — nobody drives through anybody. Stop time
-  depends on the team's pit crew upgrade, plus repairs if the car is damaged.
+- **Pit stops.** A proper pit lane: a through-road ("fast lane") running
+  alongside the start/finish straight, with eight marked bays behind it and the
+  garage frontage behind those. Cars brake for the speed-limit line while still
+  on the circuit, run down the fast lane, pull across into their own bay to be
+  serviced, and rejoin. They queue nose to tail on the fast lane; a car already
+  in its bay is out of the way and does not hold the queue up. Stop time depends
+  on the team's pit crew upgrade, plus repairs if the car is damaged.
 - **DRS.** Detection points before each long straight. Within one second of the
   car ahead, the rear wing opens: +14% top speed through the zone. Disabled in
   the wet and under the safety car.
@@ -131,8 +146,11 @@ This is the part that makes it a series rather than a screensaver.
 
 1. **Record a race.** Press `H` to hide the control room; everything else is
    drawn on the canvas, so the capture is clean.
-2. **Publish it.** The results screen ends on a call to action listing the
-   development points each team earned and the upgrades available.
+2. **Publish it.** The results screen is four full-screen cards on a rotation —
+   winner, classification, honours, then the call to action — every size
+   expressed in units of screen height, so it stays readable on a phone held
+   sideways. The last card lists the development points each team earned and
+   exactly what to comment.
 3. **Collect the votes.** Viewers comment a team and an upgrade — `RED brakes`,
    `green tyres`, `blue engine`.
 4. **Apply them.** Open the control room → *Viewer votes*, paste the comments,
@@ -199,7 +217,7 @@ browser profile — or press **RESET SEASON** to start over.
 | `powerups.js` | Boost pads, oil slicks, passive catch-up |
 | `events.js` | Timestamped event log, hindsight scoring, cluster thinning |
 | `sim.js` | The deterministic simulation; qualifying, race, safety car, results |
-| `commentary.js` | Line templates, speech queue, Web Speech announcer |
+| `commentary.js` | Line templates, offline scheduling, Web Speech announcer |
 | `hud.js` | Timing tower, lap counter, minimap, subtitles, captions, ticker |
 | `effects.js` | Skid marks, spray, smoke, sparks, confetti, rain overlay |
 | `audio.js` | Procedural WebAudio engine bed and sound effects |

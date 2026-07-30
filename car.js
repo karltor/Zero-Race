@@ -166,6 +166,7 @@ class Car {
         this.pitTimer = 0;
         this.pitBox = 0;
         this.pitLaneBlend = 0;        // 0 = racing line, 1 = fully in the pit lane
+        this.boxBlend = 0;            // 0 = on the through-road, 1 = in the box
         this.inPitLane = false;
         this.nextCompound = null;
         this._pitReason = '';
@@ -556,6 +557,7 @@ class Car {
         this.inPitLane = this.pitState === 'inlane' || this.pitState === 'stopped' || this.pitState === 'exiting';
         const targetBlend = this.inPitLane ? 1 : 0;
         this.pitLaneBlend += (targetBlend - this.pitLaneBlend) * Math.min(1, dt * 3.2);
+        if (!this.inPitLane) this.boxBlend = 0;
     }
 
     /** Every car owns one pit box so nobody parks on top of a team-mate. */
@@ -707,6 +709,21 @@ class Car {
         if (this.offTrack) { throttle = Math.min(throttle, 0.3); brake = Math.max(brake, 0.2); }
         if (this.oilTimer > 0) throttle = Math.min(throttle, 0.25);
 
+        // Slow for the pit entry while still on the circuit. Real cars are at
+        // the limit by the time they cross the line, not braking after it.
+        if (this.pitState === 'requested') {
+            const pit = Track.getPit();
+            const toEntry = Track.forwardDist(this.progress, pit.entry) * Track.getTrackLength();
+            if (toEntry < 260) {
+                const allowed = Math.sqrt(pit.speedLimit * pit.speedLimit + 2 * brakingDecel * Math.max(0, toEntry - 10));
+                if (this.speed > allowed) {
+                    brake = Math.max(brake, Math.min(0.95, (this.speed - allowed) / 60));
+                    throttle = 0;
+                    this.braking = true;
+                }
+            }
+        }
+
         // --- SCAN NEARBY CARS ---
         this.blocked = false;
         this.slipstreaming = false;
@@ -822,10 +839,20 @@ class Car {
         const n = Track.getPointCount();
         const limit = pit.speedLimit;
 
-        // Aim at a point down the pit lane.
-        const lookPts = Math.max(14, Math.round(this.speed * 0.12));
+        // Cars run down the through-road and only pull across into their box
+        // for the stop itself — `boxBlend` is that sideways move.
+        const distToBox = Track.forwardDist(this.progress, this.pitBox) * Track.getTrackLength();
+        const leaving = this.pitState === 'exiting';
+        const wantBox = this.pitState === 'stopped' ? 1
+                      : (!leaving && distToBox < 120 ? 1 - Math.max(0, (distToBox - 20) / 100) : 0);
+        this.boxBlend += (wantBox - this.boxBlend) * Math.min(1, dt * 4.5);
+
+        const laneOffset = (pit.fastOffset + (pit.boxOffset - pit.fastOffset) * this.boxBlend)
+                           * this.pitLaneBlend;
+
+        const lookPts = Math.max(12, Math.round(this.speed * 0.10));
         const lookIdx = (this.trackIndex + lookPts) % n;
-        const lookPt = Track.getPositionAt(lookIdx / n, pit.offset * this.pitLaneBlend);
+        const lookPt = Track.getPositionAt(lookIdx / n, laneOffset);
         let angleErr = Math.atan2(lookPt.y - this.y, lookPt.x - this.x) - this.angle;
         while (angleErr > Math.PI) angleErr -= Math.PI * 2;
         while (angleErr < -Math.PI) angleErr += Math.PI * 2;
@@ -834,23 +861,23 @@ class Car {
         this.braking = false;
         let target = limit;
 
-        // Follow the car in front down the lane — a pit lane is single file.
+        // Follow whoever is still on the through-road ahead of us. Cars parked
+        // in their boxes have moved aside, so they do not hold the queue up.
         for (const other of ctx.cars) {
             if (other === this || !other.inPitLane || other.retired) continue;
+            if ((other.boxBlend || 0) > 0.6) continue;      // pulled into a box
             const gap = Track.forwardDist(this.progress, other.progress) * Track.getTrackLength();
-            if (gap <= 0 || gap > 70) continue;
-            // Ignore cars serving in a box we have already passed or not reached.
-            if (other.pitState === 'stopped' && Math.abs(other.pitBox - this.pitBox) > 1e-6 && gap > 46) continue;
-            target = Math.min(target, gap < 40 ? 0 : limit * ((gap - 40) / 34));
-            if (gap < 40) this.braking = true;
+            if (gap <= 0 || gap > 75) continue;
+            target = Math.min(target, gap < 46 ? 0 : limit * ((gap - 46) / 30));
+            if (gap < 46) this.braking = true;
         }
 
         if (this.pitState === 'inlane') {
             const distPx = Track.forwardDist(this.progress, this.pitBox) * Track.getTrackLength();
             if (distPx < 130) target = Math.min(target, Math.sqrt(Math.max(0, 2 * 260 * Math.max(0, distPx - 4))));
-            if (distPx < 7 || distPx > Track.getTrackLength() * 0.5) {
+            if ((distPx < 7 && this.boxBlend > 0.7) || distPx > Track.getTrackLength() * 0.5) {
                 // Arrived (or just overshot) — snap into the box.
-                const p = Track.getPositionAt(this.pitBox, pit.offset);
+                const p = Track.getPositionAt(this.pitBox, pit.boxOffset);
                 this.x = p.x; this.y = p.y; this.angle = p.angle;
                 this.speed = 0;
                 this.pitState = 'stopped';
@@ -918,7 +945,7 @@ class Car {
         // Hard boundary — wider while in the pit lane so the lane is reachable.
         const cl = Track.closestPointNear(this.x, this.y, this.trackIndex);
         const maxDist = this.inPitLane
-            ? Track.getWidth() / 2 + 12 + Track.getPitLaneWidth()
+            ? Track.getPit().maxOffset + 6
             : Track.getWidth() * 0.52;
         if (cl.dist > maxDist) {
             const ccp = Track.getPoints()[cl.index];
@@ -1069,7 +1096,7 @@ class Car {
             if (this.stuckTimer > 1.2) {
                 const tn = Track.getPointCount();
                 const ni = (this.trackIndex + 5) % tn;
-                const pos = Track.getPositionAt(ni / tn, this.inPitLane ? Track.getPit().offset : this.targetLane * 20);
+                const pos = Track.getPositionAt(ni / tn, this.inPitLane ? Track.getPit().fastOffset : this.targetLane * 20);
                 this.x = pos.x; this.y = pos.y; this.angle = pos.angle;
                 this.speed = 80;
                 this.stuckTimer = 0;
