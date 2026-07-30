@@ -559,160 +559,244 @@ const Race = (() => {
     // Results + call to action
     // -------------------------------------------------------------------------
 
+    /**
+     * Results screen, built as a rotating set of full-screen cards.
+     *
+     * The previous version crammed the classification, the honours and the
+     * call to action into three columns sized for a desktop window, which is
+     * unreadable on a phone held sideways — the way most of the audience will
+     * see it. Each card now owns the whole screen, and every size is expressed
+     * in units of screen height so it scales to any aspect ratio.
+     */
+    const RESULT_CARDS = 4;
+    const CARD_MS = 7600;
+
     function _drawResults(ctx, W, H) {
         const res = preSim.result;
-        const S = Hud.scale;
-        const t = Math.min(1, phaseTimer / 700);
+        const u = H / 100;                       // 1 unit = 1% of screen height
+        const fade = Math.min(1, phaseTimer / 700);
+
+        const card = Math.floor(phaseTimer / CARD_MS) % RESULT_CARDS;
+        const inCard = phaseTimer % CARD_MS;
+        const cardFade = Math.min(1, inCard / 350) * Math.min(1, (CARD_MS - inCard) / 350);
 
         ctx.save();
-        ctx.globalAlpha = t;
-        _dim(ctx, W, H, 0.94);
+        ctx.globalAlpha = fade;
+        _dim(ctx, W, H, 0.95);
+
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
 
-        ctx.fillStyle = '#ffd700';
-        ctx.shadowColor = '#ffd700'; ctx.shadowBlur = 26;
-        ctx.font = `bold ${Math.round(38 * S)}px Rajdhani, Arial`;
-        ctx.fillText('RACE COMPLETE', W / 2, 46 * S);
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.font = `${Math.round(13 * S)}px Rajdhani, Arial`;
-        ctx.fillText(`Round ${raceNumber} · ${Track.getName()} · ${res.laps} laps · seed ${res.seedCode}`, W / 2, 76 * S);
+        // Persistent header
+        ctx.fillStyle = 'rgba(255,255,255,0.42)';
+        ctx.font = `bold ${2.6 * u}px Rajdhani, Arial`;
+        ctx.fillText(`ROUND ${raceNumber}  ·  ${Track.getName().toUpperCase()}  ·  ${res.laps} LAPS  ·  SEED ${res.seedCode}`,
+                     W / 2, 5 * u);
 
-        // ── Classification ──
-        const colX = W * 0.06;
-        const top = 118 * S;
-        ctx.textAlign = 'left';
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = `bold ${Math.round(11 * S)}px Rajdhani, Arial`;
-        ctx.fillText('FINAL CLASSIFICATION', colX, top - 16 * S);
+        ctx.save();
+        ctx.globalAlpha = fade * cardFade;
+        if (card === 0)      _cardWinner(ctx, W, H, u, res);
+        else if (card === 1) _cardClassification(ctx, W, H, u, res);
+        else if (card === 2) _cardHonours(ctx, W, H, u, res);
+        else                 _cardVote(ctx, W, H, u, res);
+        ctx.restore();
+
+        // Card indicator dots
+        for (let i = 0; i < RESULT_CARDS; i++) {
+            const dx = W / 2 + (i - (RESULT_CARDS - 1) / 2) * 3.2 * u;
+            ctx.beginPath();
+            ctx.arc(dx, 96 * u, 0.75 * u, 0, Math.PI * 2);
+            ctx.fillStyle = i === card ? '#e94560' : 'rgba(255,255,255,0.22)';
+            ctx.fill();
+        }
+
+        ctx.fillStyle = 'rgba(255,255,255,0.26)';
+        ctx.font = `${2.2 * u}px Rajdhani, Arial`;
+        ctx.fillText('N — next race     ·     H — control room', W / 2, 91 * u);
+
+        ctx.restore();
+    }
+
+    function _cardWinner(ctx, W, H, u, res) {
+        const win = res.standings[0];
+        if (!win) return;
+        const col = CarSVG.TEAM_COLORS[win.team];
+
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = `bold ${3.4 * u}px Rajdhani, Arial`;
+        ctx.fillText('WINNER', W / 2, 22 * u);
+
+        ctx.shadowColor = col.main;
+        ctx.shadowBlur = 5 * u;
+        ctx.fillStyle = col.light;
+        ctx.font = `bold ${15 * u}px Rajdhani, Arial`;
+        ctx.fillText(win.name.toUpperCase(), W / 2, 36 * u);
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.font = `${3 * u}px Rajdhani, Arial`;
+        const gained = win.placesGained;
+        ctx.fillText(`from ${win.gridPosition === 1 ? 'pole position' : 'P' + win.gridPosition + ' on the grid'}` +
+                     (gained > 0 ? `  ·  ${gained} place${gained > 1 ? 's' : ''} gained` : ''),
+                     W / 2, 47 * u);
+
+        // Runner-up and third, side by side and still large.
+        const rest = res.standings.slice(1, 3);
+        rest.forEach((s, i) => {
+            const c2 = CarSVG.TEAM_COLORS[s.team];
+            const x = W / 2 + (i === 0 ? -1 : 1) * W * 0.19;
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.font = `bold ${2.8 * u}px Rajdhani, Arial`;
+            ctx.fillText(i === 0 ? 'SECOND' : 'THIRD', x, 63 * u);
+            ctx.fillStyle = c2.light;
+            ctx.font = `bold ${6 * u}px Rajdhani, Arial`;
+            ctx.fillText(s.name.toUpperCase(), x, 72 * u);
+        });
+    }
+
+    function _cardClassification(ctx, W, H, u, res) {
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.font = `bold ${3 * u}px Rajdhani, Arial`;
+        ctx.fillText('FINAL CLASSIFICATION', W / 2, 13 * u);
+
+        const rowH = 8.4 * u;
+        const top = 20 * u;
+        const boxW = Math.min(W * 0.72, 130 * u);
+        const x0 = W / 2 - boxW / 2;
 
         res.standings.forEach((s, i) => {
-            const ry = top + i * 34 * S;
+            const y = top + i * rowH;
             const col = CarSVG.TEAM_COLORS[s.team];
-            Hud.rrect(ctx, colX, ry, W * 0.30, 30 * S, 4);
-            ctx.fillStyle = i < 3 ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)';
+
+            Hud.rrect(ctx, x0, y, boxW, rowH - 1.1 * u, 0.8 * u);
+            ctx.fillStyle = i === 0 ? 'rgba(255,215,0,0.16)'
+                          : (i % 2 ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.085)');
             ctx.fill();
             ctx.fillStyle = col.main;
-            ctx.fillRect(colX, ry, 4 * S, 30 * S);
+            ctx.fillRect(x0, y, 0.9 * u, rowH - 1.1 * u);
 
-            ctx.fillStyle = i === 0 ? '#ffd700' : 'rgba(255,255,255,0.5)';
-            ctx.font = `bold ${Math.round(13 * S)}px Rajdhani, Arial`;
-            ctx.fillText(`P${i + 1}`, colX + 12 * S, ry + 15 * S);
+            const mid = y + (rowH - 1.1 * u) / 2;
+            ctx.textAlign = 'left';
+            ctx.fillStyle = i === 0 ? '#ffd700' : 'rgba(255,255,255,0.55)';
+            ctx.font = `bold ${4 * u}px Rajdhani, Arial`;
+            ctx.fillText(`${i + 1}`, x0 + 2.6 * u, mid);
 
-            ctx.fillStyle = s.retired ? 'rgba(255,140,140,0.7)' : '#fff';
-            ctx.font = `bold ${Math.round(14 * S)}px Rajdhani, Arial`;
-            ctx.fillText(s.name, colX + 42 * S, ry + 15 * S);
+            ctx.fillStyle = s.retired ? 'rgba(255,150,150,0.8)' : '#fff';
+            ctx.font = `bold ${4.4 * u}px Rajdhani, Arial`;
+            ctx.fillText(s.name, x0 + 9 * u, mid);
+
+            // Grid delta
+            ctx.font = `${3.4 * u}px Rajdhani, Arial`;
+            const d = s.placesGained;
+            if (s.retired) { ctx.fillStyle = '#ff7b7b'; ctx.fillText('DNF', x0 + boxW * 0.52, mid); }
+            else if (d !== 0) {
+                ctx.fillStyle = d > 0 ? '#5ee08a' : '#ff9b8f';
+                ctx.fillText(`${d > 0 ? '▲' : '▼'}${Math.abs(d)}`, x0 + boxW * 0.52, mid);
+            }
 
             ctx.textAlign = 'right';
-            ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
-            const delta = s.placesGained;
-            if (s.retired) { ctx.fillStyle = '#ff6b6b'; ctx.fillText('DNF', colX + W * 0.30 - 12 * S, ry + 15 * S); }
-            else if (delta !== 0) {
-                ctx.fillStyle = delta > 0 ? '#4ade80' : '#ff8a80';
-                ctx.fillText(`${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}`, colX + W * 0.30 - 12 * S, ry + 15 * S);
-            } else { ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillText('–', colX + W * 0.30 - 12 * S, ry + 15 * S); }
-            ctx.textAlign = 'left';
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.font = `${3.2 * u}px Rajdhani, Arial`;
+            ctx.fillText(`${s.pitStops} stop${s.pitStops === 1 ? '' : 's'}  ·  ${s.overtakes} passes`,
+                         x0 + boxW - 2.6 * u, mid);
+            ctx.textAlign = 'center';
         });
+    }
 
-        // ── Race honours ──
-        const midX = W * 0.40;
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = `bold ${Math.round(11 * S)}px Rajdhani, Arial`;
-        ctx.fillText('RACE HONOURS', midX, top - 16 * S);
+    function _cardHonours(ctx, W, H, u, res) {
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.font = `bold ${3 * u}px Rajdhani, Arial`;
+        ctx.fillText('RACE HONOURS', W / 2, 13 * u);
 
-        const honours = [];
-        if (res.fastestLap)    honours.push(['⚡ FASTEST LAP', res.fastestLap.name, Hud.fmtTime(res.fastestLap.time), res.fastestLap.team]);
-        if (res.mostOvertakes) honours.push(['🏎 MOST OVERTAKES', res.mostOvertakes.name, `${res.mostOvertakes.overtakes} passes`, res.mostOvertakes.team]);
-        if (res.mostBoosters)  honours.push(['🟡 MOST BOOST PADS', `${res.mostBoosters.team.toUpperCase()} team`, `${res.mostBoosters.count} pads`, res.mostBoosters.team]);
-        if (res.cleanestTeam)  honours.push(['🛡 CLEANEST RACE', `${res.cleanestTeam.toUpperCase()} team`, 'fewest incidents', res.cleanestTeam]);
-        honours.push(['☁ CONDITIONS', res.weather, res.weatherEnd, 'blue']);
-        honours.push(['🚨 SAFETY CARS', String(res.safetyCars), res.safetyCars ? 'deployed' : 'clean race', 'yellow']);
+        const rows = [];
+        if (res.fastestLap)    rows.push(['FASTEST LAP', res.fastestLap.name, Hud.fmtTime(res.fastestLap.time), res.fastestLap.team]);
+        if (res.mostOvertakes) rows.push(['MOST OVERTAKES', res.mostOvertakes.name, `${res.mostOvertakes.overtakes} passes`, res.mostOvertakes.team]);
+        if (res.mostBoosters)  rows.push(['MOST BOOST PADS', `${res.mostBoosters.team.toUpperCase()} TEAM`, `${res.mostBoosters.count} pads`, res.mostBoosters.team]);
+        if (res.cleanestTeam)  rows.push(['CLEANEST RACE', `${res.cleanestTeam.toUpperCase()} TEAM`, 'fewest incidents', res.cleanestTeam]);
+        rows.push(['CONDITIONS', res.weather, `finished ${res.weatherEnd}`, 'blue']);
+        rows.push(['SAFETY CARS', res.safetyCars ? `${res.safetyCars} deployed` : 'none', res.safetyCars ? '' : 'a clean race', 'yellow']);
 
-        honours.forEach((h, i) => {
-            const ry = top + i * 40 * S;
-            const col = CarSVG.TEAM_COLORS[h[3]] || CarSVG.TEAM_COLORS.blue;
-            Hud.rrect(ctx, midX, ry, W * 0.22, 34 * S, 4);
-            ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        const rowH = 11 * u;
+        const top = 22 * u;
+        const boxW = Math.min(W * 0.74, 140 * u);
+        const x0 = W / 2 - boxW / 2;
+
+        rows.forEach((r, i) => {
+            const y = top + i * rowH;
+            const col = CarSVG.TEAM_COLORS[r[3]] || CarSVG.TEAM_COLORS.blue;
+            Hud.rrect(ctx, x0, y, boxW, rowH - 1.4 * u, 0.8 * u);
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
             ctx.fill();
             ctx.fillStyle = col.main;
-            ctx.fillRect(midX, ry, 4 * S, 34 * S);
-            ctx.fillStyle = 'rgba(255,255,255,0.45)';
-            ctx.font = `bold ${Math.round(9.5 * S)}px Rajdhani, Arial`;
-            ctx.fillText(h[0], midX + 12 * S, ry + 11 * S);
-            ctx.fillStyle = '#fff';
-            ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
-            ctx.fillText(`${h[1]}  —  ${h[2]}`, midX + 12 * S, ry + 25 * S);
-        });
+            ctx.fillRect(x0, y, 0.9 * u, rowH - 1.4 * u);
 
-        // ── Development points + call to action ──
-        const ctaX = W * 0.645;
-        const ctaW = W * 0.30;
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = `bold ${Math.round(11 * S)}px Rajdhani, Arial`;
-        ctx.fillText('DEVELOPMENT POINTS EARNED', ctaX, top - 16 * S);
+            ctx.textAlign = 'left';
+            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+            ctx.font = `bold ${2.6 * u}px Rajdhani, Arial`;
+            ctx.fillText(r[0], x0 + 3 * u, y + 3.2 * u);
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${4.2 * u}px Rajdhani, Arial`;
+            ctx.fillText(r[1], x0 + 3 * u, y + 7 * u);
+            ctx.textAlign = 'right';
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.font = `${3.4 * u}px Rajdhani, Arial`;
+            ctx.fillText(r[2], x0 + boxW - 3 * u, y + 6 * u);
+            ctx.textAlign = 'center';
+        });
+    }
+
+    function _cardVote(ctx, W, H, u, res) {
+        const pulse = 0.8 + 0.2 * Math.sin(performance.now() * 0.004);
+        ctx.fillStyle = `rgba(255,122,144,${pulse})`;
+        ctx.font = `bold ${5.6 * u}px Rajdhani, Arial`;
+        ctx.fillText('YOU DECIDE THE NEXT RACE', W / 2, 15 * u);
+
+        // Points earned, one big row per team.
+        const rowH = 9.5 * u;
+        const top = 24 * u;
+        const boxW = Math.min(W * 0.72, 130 * u);
+        const x0 = W / 2 - boxW / 2;
 
         Garage.TEAMS.forEach((team, i) => {
-            const ry = top + i * 40 * S;
+            const y = top + i * rowH;
             const col = CarSVG.TEAM_COLORS[team];
             const info = Garage.getTeam(team);
             const gained = awarded && awarded[team] ? awarded[team].total : 0;
 
-            Hud.rrect(ctx, ctaX, ry, ctaW, 34 * S, 4);
-            ctx.fillStyle = `rgba(${_rgb(col.main)},0.16)`;
+            Hud.rrect(ctx, x0, y, boxW, rowH - 1.3 * u, 0.8 * u);
+            ctx.fillStyle = `rgba(${_rgb(col.main)},0.20)`;
             ctx.fill();
             ctx.fillStyle = col.main;
-            ctx.fillRect(ctaX, ry, 4 * S, 34 * S);
+            ctx.fillRect(x0, y, 0.9 * u, rowH - 1.3 * u);
 
+            const mid = y + (rowH - 1.3 * u) / 2;
+            ctx.textAlign = 'left';
             ctx.fillStyle = col.light;
-            ctx.font = `bold ${Math.round(15 * S)}px Rajdhani, Arial`;
-            ctx.fillText(team.toUpperCase(), ctaX + 14 * S, ry + 17 * S);
+            ctx.font = `bold ${5 * u}px Rajdhani, Arial`;
+            ctx.fillText(team.toUpperCase(), x0 + 3 * u, mid);
 
-            ctx.fillStyle = '#4ade80';
-            ctx.font = `bold ${Math.round(14 * S)}px Rajdhani, Arial`;
-            ctx.fillText(`+${gained}`, ctaX + 90 * S, ry + 17 * S);
+            ctx.fillStyle = '#5ee08a';
+            ctx.font = `bold ${4.4 * u}px Rajdhani, Arial`;
+            ctx.fillText(`+${gained}`, x0 + boxW * 0.30, mid);
 
-            ctx.fillStyle = 'rgba(255,255,255,0.65)';
-            ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
-            ctx.fillText(`bank ${info.bank}  ·  ${info.championship} champ pts`, ctaX + 130 * S, ry + 17 * S);
+            ctx.textAlign = 'right';
+            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            ctx.font = `${3.4 * u}px Rajdhani, Arial`;
+            ctx.fillText(`${info.bank} to spend`, x0 + boxW - 3 * u, mid);
+            ctx.textAlign = 'center';
         });
 
-        // The actual call to action
-        const cy = top + 4 * 40 * S + 22 * S;
-        const pulse = 0.75 + 0.25 * Math.sin(performance.now() * 0.004);
-        Hud.rrect(ctx, ctaX, cy, ctaW, 148 * S, 8);
-        ctx.fillStyle = 'rgba(233,69,96,0.14)';
-        ctx.fill();
-        ctx.strokeStyle = `rgba(233,69,96,${pulse})`;
-        ctx.lineWidth = 2;
-        ctx.stroke();
+        // The instruction, big enough to read on a phone.
+        ctx.fillStyle = '#ffd97a';
+        ctx.font = `bold ${4.6 * u}px Rajdhani, Arial`;
+        ctx.fillText('COMMENT A TEAM AND AN UPGRADE', W / 2, 68 * u);
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${5.4 * u}px Rajdhani, Arial`;
+        ctx.fillText('"RED BRAKES"   "GREEN TYRES"   "BLUE ENGINE"', W / 2, 76 * u);
 
-        ctx.fillStyle = '#ff7a90';
-        ctx.font = `bold ${Math.round(17 * S)}px Rajdhani, Arial`;
-        ctx.fillText('👇  YOU DECIDE THE NEXT RACE', ctaX + 16 * S, cy + 24 * S);
-
-        ctx.fillStyle = 'rgba(255,255,255,0.8)';
-        ctx.font = `${Math.round(12.5 * S)}px Rajdhani, Arial`;
-        const lines = [
-            'Comment a team and an upgrade, for example:',
-            '"RED brakes"   ·   "green tyres"   ·   "blue engine"',
-            'Most-voted upgrade per team is fitted before the next round.',
-            '',
-            `Upgrades: ${Garage.CATALOG.map(u => u.name).join(' · ')}`,
-        ];
-        lines.forEach((ln, i) => {
-            ctx.fillStyle = i === 1 ? '#ffd97a' : 'rgba(255,255,255,0.75)';
-            ctx.font = `${Math.round((i === 1 ? 13.5 : 12) * S)}px Rajdhani, Arial`;
-            ctx.fillText(ln, ctaX + 16 * S, cy + (48 + i * 19) * S);
-        });
-
-        ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(255,255,255,0.32)';
-        ctx.font = `${Math.round(12 * S)}px Rajdhani, Arial`;
-        ctx.fillText('N — next race     ·     H — control room     ·     C — toggle broadcast camera',
-                     W / 2, H - 26 * S);
-
-        ctx.restore();
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = `${2.9 * u}px Rajdhani, Arial`;
+        ctx.fillText(Garage.CATALOG.map(x => x.name).join('  ·  '), W / 2, 83 * u);
     }
 
     function _rgb(hex) {

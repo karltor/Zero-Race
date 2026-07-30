@@ -143,12 +143,55 @@ const EventLog = (() => {
             e.significance = s;
         }
 
+        // ── Hindsight on position swaps ───────────────────────────────────
+        // The commentator used to announce "Red takes the lead" while the
+        // viewer was already watching Green take it straight back. We know the
+        // whole race, so mark every pass that gets reversed and let the writer
+        // choose wording that matches what is on screen.
+        evts.sort((a, b) => a.t - b.t || a.seq - b.seq);
+        for (let i = 0; i < evts.length; i++) {
+            const e = evts[i];
+            if (e.type !== 'overtake') continue;
+            for (let j = i + 1; j < evts.length && evts[j].t - e.t < 16000; j++) {
+                const f = evts[j];
+                if (f.type !== 'overtake') continue;
+                if (f.data.carId !== e.data.victimId || f.data.victimId !== e.data.carId) continue;
+                const gap = (f.t - e.t) / 1000;
+                e.data.reversedIn = gap;
+                f.data.isRetake = true;
+                f.data.retakeAfter = gap;
+                // A move that gets undone did not win anyone the race.
+                delete e.data.raceWinningMove;
+                break;
+            }
+        }
+
+        // A pass reversed almost immediately is one moment, not two. Fold it
+        // into the retake so the audience hears the outcome, not the blip.
+        const duelCount = {};
+        for (const e of evts) {
+            if (e.type !== 'overtake') continue;
+            if (e.data.reversedIn !== undefined && e.data.reversedIn < 4.0) {
+                e.significance -= 40;
+                e.data.foldedIntoRetake = true;
+            }
+            // Being taken straight back is a story in itself.
+            if (e.data.isRetake && e.data.retakeAfter < 8) e.significance += 12;
+
+            // Diminishing returns on a duel that keeps swapping: after the
+            // first couple of exchanges the audience has the picture, and
+            // repeating it crowds out the rest of the race.
+            const pair = [e.data.carId, e.data.victimId].sort().join('|');
+            duelCount[pair] = (duelCount[pair] || 0) + 1;
+            e.data.duelExchange = duelCount[pair];
+            if (duelCount[pair] > 2) e.significance -= 14 * (duelCount[pair] - 2);
+        }
+
         // ── Thin out clusters ─────────────────────────────────────────────
         // Sort by time, then walk a sliding window: inside a 2.6 s window keep
         // at most the two most significant events, and never two of the same
         // type. Everything else is still in the log (the ticker shows it) but
         // is marked `speakable = false`.
-        evts.sort((a, b) => a.t - b.t || a.seq - b.seq);
 
         const WINDOW = 2600;
         for (const e of evts) e.speakable = true;

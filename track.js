@@ -24,8 +24,13 @@ const Track = (() => {
     let _pit       = null; // {entry,exit,side,offset,boxes:[progress...],speedLimit}
     let _name      = 'Circuit';
 
-    const PIT_LANE_GAP = 8;    // px between track edge and pit lane
-    const PIT_LANE_W   = 34;   // px width of the pit lane
+    // A pit lane is two things, not one: a through-road ("fast lane") that cars
+    // drive down, and a row of boxes alongside it that they pull into. The
+    // first version merged the two, which is why it did not read as a pit lane.
+    const PIT_LANE_GAP = 8;    // px between track edge and the fast lane
+    const PIT_FAST_W   = 32;   // px width of the through-road
+    const PIT_BOX_W    = 42;   // px depth of the box area behind it
+    const PIT_LANE_W   = PIT_FAST_W + PIT_BOX_W;
     const PIT_SPEED    = 105;  // px/s speed limit in the pit lane
 
     const CIRCUIT_PREFIX = ['Nord', 'Val', 'Mont', 'Silver', 'Red', 'Sun', 'Storm', 'Iron', 'Cobalt', 'Zero',
@@ -338,18 +343,24 @@ const Track = (() => {
 
         // Eight boxes spread across the middle 62% of the lane.
         const boxes = [];
-        const boxSpan = pitWindow.frac * 0.62;
-        const boxStart = wrap(pitWindow.fracStart + pitWindow.frac * 0.20);
+        const boxSpan = pitWindow.frac * 0.66;
+        const boxStart = wrap(pitWindow.fracStart + pitWindow.frac * 0.17);
         for (let i = 0; i < 8; i++) boxes.push(wrap(boxStart + boxSpan * (i / 7)));
 
         _pit = {
             entry: pitWindow.fracStart,
             exit:  wrap(pitWindow.fracStart + pitWindow.frac),
             side:  pitSide,
-            offset: pitSide * (trackWidth / 2 + PIT_LANE_GAP + PIT_LANE_W / 2),
+            // Lateral offset of the through-road the cars drive down …
+            fastOffset: pitSide * (trackWidth / 2 + PIT_LANE_GAP + PIT_FAST_W / 2),
+            // … and of the box they pull into to be serviced.
+            boxOffset:  pitSide * (trackWidth / 2 + PIT_LANE_GAP + PIT_FAST_W + PIT_BOX_W * 0.45),
+            maxOffset:  Math.abs(trackWidth / 2 + PIT_LANE_GAP + PIT_LANE_W),
             boxes,
             speedLimit: PIT_SPEED,
         };
+        // Back-compat alias: anything that just wants "somewhere in the lane".
+        _pit.offset = _pit.fastOffset;
 
         // 5. DRS zones on the other long straights (never on the pit straight —
         //    a DRS train down the pit lane would look silly).
@@ -813,81 +824,129 @@ const Track = (() => {
         const n = points.length;
         const iStart = Math.round(_pit.entry * n);
         const span = Math.max(2, Math.round(forwardDist(_pit.entry, _pit.exit) * n));
-        const inner = _pit.side * (trackWidth / 2 + PIT_LANE_GAP);
-        const outer = _pit.side * (trackWidth / 2 + PIT_LANE_GAP + PIT_LANE_W);
+        const side = _pit.side;
+
+        // Boundaries, working outwards from the track edge.
+        const wallIn   = side * (trackWidth / 2 + PIT_LANE_GAP);
+        const fastOut  = side * (trackWidth / 2 + PIT_LANE_GAP + PIT_FAST_W);
+        const boxOut   = side * (trackWidth / 2 + PIT_LANE_GAP + PIT_LANE_W);
+
+        /** Fill the band between two lateral offsets over the pit window. */
+        const band = (from, to, fill) => {
+            ctx.beginPath();
+            for (let k = 0; k <= span; k++) {
+                const i = (iStart + k) % n;
+                const nm = normalAt(i);
+                ctx.lineTo(points[i].x + nm.x * from, points[i].y + nm.y * from);
+            }
+            for (let k = span; k >= 0; k--) {
+                const i = (iStart + k) % n;
+                const nm = normalAt(i);
+                ctx.lineTo(points[i].x + nm.x * to, points[i].y + nm.y * to);
+            }
+            ctx.closePath();
+            ctx.fillStyle = fill;
+            ctx.fill();
+        };
+
+        /** Stroke a line running along the pit window at a lateral offset. */
+        const line = (off, color, width, dash) => {
+            ctx.save();
+            ctx.setLineDash(dash || []);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            for (let k = 0; k <= span; k++) {
+                const i = (iStart + k) % n;
+                const nm = normalAt(i);
+                ctx.lineTo(points[i].x + nm.x * off, points[i].y + nm.y * off);
+            }
+            ctx.stroke();
+            ctx.restore();
+        };
 
         ctx.save();
 
-        // Tarmac
-        ctx.beginPath();
-        for (let k = 0; k <= span; k++) {
-            const i = (iStart + k) % n;
-            const nm = normalAt(i);
-            ctx.lineTo(points[i].x + nm.x * inner, points[i].y + nm.y * inner);
-        }
-        for (let k = span; k >= 0; k--) {
-            const i = (iStart + k) % n;
-            const nm = normalAt(i);
-            ctx.lineTo(points[i].x + nm.x * outer, points[i].y + nm.y * outer);
-        }
-        ctx.closePath();
-        ctx.fillStyle = '#3d3d42';
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
+        // Garage frontage behind everything, to sell the depth.
+        band(boxOut, boxOut + side * 16, '#22242c');
+        // Box area: pale concrete, clearly a different surface …
+        band(fastOut, boxOut, '#6e6e78');
+        // … from the through-road, which is dark asphalt like the circuit.
+        band(wallIn, fastOut, '#2e2e34');
 
-        // Pit boxes, one per car, in team order
+        // Markings: solid white against the circuit, dashed down the middle of
+        // the fast lane, solid again where the boxes begin.
+        line(wallIn, 'rgba(255,255,255,0.8)', 2.5);
+        line(side * (trackWidth / 2 + PIT_LANE_GAP + PIT_FAST_W / 2), 'rgba(255,255,255,0.30)', 1.5, [14, 12]);
+        line(fastOut, 'rgba(255,255,255,0.85)', 2.5);
+        line(boxOut, 'rgba(0,0,0,0.5)', 3);
+
+        // Team boxes, drawn in the box area with a lead-in from the fast lane.
         const teamOrder = ['blue', 'blue', 'yellow', 'yellow', 'red', 'red', 'green', 'green'];
         for (let b = 0; b < _pit.boxes.length; b++) {
             const idx = Math.round(_pit.boxes[b] * n) % n;
             const nm = normalAt(idx);
             const p = points[idx];
-            const ang = angleAt(idx);
-            const bx = p.x + nm.x * _pit.offset;
-            const by = p.y + nm.y * _pit.offset;
-            ctx.save();
-            ctx.translate(bx, by);
-            ctx.rotate(ang);
             const col = (typeof CarSVG !== 'undefined' && CarSVG.TEAM_COLORS[teamOrder[b]])
-                ? CarSVG.TEAM_COLORS[teamOrder[b]].main : '#888';
-            ctx.globalAlpha = 0.55;
-            ctx.fillStyle = col;
-            ctx.fillRect(-16, -PIT_LANE_W / 2 + 3, 32, PIT_LANE_W - 6);
+                ? CarSVG.TEAM_COLORS[teamOrder[b]] : { main: '#888', light: '#aaa' };
+
+            ctx.save();
+            ctx.translate(p.x + nm.x * fastOut, p.y + nm.y * fastOut);
+            ctx.rotate(angleAt(idx));
+
+            const depth = PIT_BOX_W * side;
+            const y0 = Math.min(0, depth), bh = Math.abs(depth);
+
+            // Painted bay: a light box outline on the concrete …
+            ctx.globalAlpha = 0.16;
+            ctx.fillStyle = col.main;
+            ctx.fillRect(-20, y0, 40, bh);
             ctx.globalAlpha = 0.9;
-            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-            ctx.lineWidth = 1.5;
-            ctx.strokeRect(-16, -PIT_LANE_W / 2 + 3, 32, PIT_LANE_W - 6);
+            ctx.strokeStyle = '#f2f2f2';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(-20, y0, 40, bh);
+
+            // … with the team's colour as a band across the back of the garage.
+            ctx.globalAlpha = 0.95;
+            ctx.fillStyle = col.main;
+            ctx.fillRect(-20, side > 0 ? y0 + bh - 9 : y0, 40, 9);
+
+            // Number painted on the floor of the bay.
+            ctx.globalAlpha = 0.55;
+            ctx.fillStyle = '#111';
+            ctx.font = 'bold 15px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(b + 1), 0, depth * 0.42);
             ctx.restore();
         }
 
-        // Dashed separation line between circuit and pit lane
-        ctx.save();
-        ctx.setLineDash([10, 8]);
-        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (let k = 0; k <= span; k++) {
-            const i = (iStart + k) % n;
-            const nm = normalAt(i);
-            ctx.lineTo(points[i].x + nm.x * inner, points[i].y + nm.y * inner);
-        }
-        ctx.stroke();
-        ctx.restore();
-
-        // "PIT LANE" label near the entry
-        const li = (iStart + Math.round(span * 0.06)) % n;
+        // "PIT LANE" on the through-road near the entry.
+        const li = (iStart + Math.round(span * 0.05)) % n;
         const lnm = normalAt(li);
         const lang = angleAt(li);
         ctx.save();
-        ctx.translate(points[li].x + lnm.x * _pit.offset, points[li].y + lnm.y * _pit.offset);
-        // Keep the label upright whichever way the straight runs.
+        ctx.translate(points[li].x + lnm.x * _pit.fastOffset, points[li].y + lnm.y * _pit.fastOffset);
         ctx.rotate(Math.abs(lang) > Math.PI / 2 ? lang + Math.PI : lang);
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
-        ctx.font = 'bold 11px Arial';
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px Arial';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('PIT LANE', 0, 0);
+        ctx.restore();
+
+        // Speed-limit line at the entry.
+        const ei = (iStart + 2) % n;
+        const enm = normalAt(ei);
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(255,220,80,0.8)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(points[ei].x + enm.x * wallIn, points[ei].y + enm.y * wallIn);
+        ctx.lineTo(points[ei].x + enm.x * boxOut, points[ei].y + enm.y * boxOut);
+        ctx.stroke();
         ctx.restore();
 
         ctx.restore();
@@ -1039,13 +1098,14 @@ const Track = (() => {
     function getPit()         { return _pit; }
     function getName()        { return _name; }
     function getPitLaneWidth(){ return PIT_LANE_W; }
+    function getPitFastWidth(){ return PIT_FAST_W; }
 
     return {
         generate, draw, drawDebug, getPositionAt, getTrackLength,
         getPoints, getWidth, angleAt, normalAt, curvatureAt,
         closestPoint, closestPointNear, getPointCount, getBounds,
         getCtrlPoints, setCtrlPoint, rebuildFromCtrl,
-        getStraights, getDrsZones, getSectors, getPit, getName, getPitLaneWidth,
+        getStraights, getDrsZones, getSectors, getPit, getName, getPitLaneWidth, getPitFastWidth,
         wrap, inRange, forwardDist, signedDist, isInDrs, drsDetectionCrossed,
     };
 })();
