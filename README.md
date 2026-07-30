@@ -230,6 +230,19 @@ browser profile — or press **RESET SEASON** to start over.
 Everything runs in the browser. There is no server, no build, and no network
 call at runtime.
 
+### Layout validation
+
+Generation rejects a layout unless it passes three tests, and retries with a
+progressively tamer shape until one does (so it always terminates):
+
+1. the control polygon does not cross itself;
+2. **no corner is tighter than 0.62 track widths of radius** — the edge-crossing
+   test alone lets through kinks the cars cannot physically take, which used to
+   collect the entire field in one corner;
+3. the offset track edges do not pinch shut.
+
+The radius test is O(n) and runs first; the edge test is O(n²) and runs last.
+
 ### The circuit is bigger than the screen
 
 Tracks are generated at 1.55× the viewport. A circuit confined to the screen has

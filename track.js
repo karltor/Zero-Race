@@ -33,6 +33,10 @@ const Track = (() => {
     const PIT_LANE_W   = PIT_FAST_W + PIT_BOX_W;
     const PIT_SPEED    = 105;  // px/s speed limit in the pit lane
 
+    /** Tightest corner we will accept, in px. Below roughly one track width
+     *  the racing line does not fit and the AI simply piles into the barrier. */
+    const MIN_CORNER_RADIUS = 132 * 0.62;
+
     const CIRCUIT_PREFIX = ['Nord', 'Val', 'Mont', 'Silver', 'Red', 'Sun', 'Storm', 'Iron', 'Cobalt', 'Zero',
                             'Black', 'Gold', 'Ash', 'Vent', 'Nova', 'Kant', 'Bris', 'Solar', 'Hollow', 'Vector'];
     const CIRCUIT_SUFFIX = ['ring', 'creek', 'gate', 'stone', 'hollow', 'park', 'reach', 'bend', 'spur', 'vale',
@@ -56,7 +60,7 @@ const Track = (() => {
         const ry = (h - margin * 2) / 2;
 
         let validAttempt = -1;
-        let rejCtrl = 0, rejEdge = 0;
+        let rejCtrl = 0, rejEdge = 0, rejTight = 0;
         for (let attempt = 0; attempt < 40; attempt++) {
             // Lots of control points is what makes a circuit feel like a
             // circuit rather than an oval: each one is a potential corner.
@@ -140,7 +144,7 @@ const Track = (() => {
                     // Never next to a straight: a hairpin right at the end of
                     // one leaves no braking zone and the AI just runs wide.
                     if (claimed.has((i + 1) % numCtrl) || claimed.has((i - 1 + numCtrl) % numCtrl)) continue;
-                    const pull = 0.52 + R.next() * 0.22;
+                    const pull = 0.58 + R.next() * 0.20;
                     ctrl[i] = { x: cx + (ctrl[i].x - cx) * pull, y: cy + (ctrl[i].y - cy) * pull };
                     claimed.add(i);
                     k++;
@@ -184,12 +188,18 @@ const Track = (() => {
             computeLength();
             _buildCurvature();
 
-            if (!_findEdgeCross()) { validAttempt = attempt; break; }
-            rejEdge++;
+            // Nothing tighter than a corner the cars can actually take. This
+            // test is O(n) so it runs before the O(n²) edge check.
+            if (_minCornerRadius() < MIN_CORNER_RADIUS) { rejTight++; continue; }
+            if (_findEdgeCross()) { rejEdge++; continue; }
+
+            validAttempt = attempt;
+            break;
         }
 
         if (validAttempt < 0) {
-            console.warn(`[track] no clean layout in 40 attempts (${rejCtrl} self-crossing polygons, ${rejEdge} pinched edges) — using last`);
+            console.warn(`[track] no clean layout in 40 attempts (${rejCtrl} self-crossing, ` +
+                         `${rejEdge} pinched edges, ${rejTight} too tight) — using last`);
         }
 
         _analyse(R);
@@ -503,6 +513,32 @@ const Track = (() => {
         return null;
     }
 
+    /**
+     * Tightest corner on the circuit, as a radius in px.
+     *
+     * The edge-crossing test only catches corners so tight the *inner* edge
+     * folds over itself. A kink can be far tighter than any car can drive and
+     * still pass that test — which is exactly what was collecting the whole
+     * field in one corner. Measure the circumradius of the spline directly.
+     */
+    function _minCornerRadius() {
+        const n = points.length;
+        if (n < 16) return Infinity;
+        const look = 6;
+        let minR = Infinity;
+        for (let i = 0; i < n; i++) {
+            const p0 = points[(i - look + n) % n], p1 = points[i], p2 = points[(i + look) % n];
+            const a = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            const b = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+            const c = Math.hypot(p2.x - p0.x, p2.y - p0.y);
+            const area2 = Math.abs((p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y));
+            if (area2 < 1e-6) continue;                    // collinear: straight
+            const R = (a * b * c) / (2 * area2);
+            if (R < minR) minR = R;
+        }
+        return minR;
+    }
+
     function _findEdgeCross() {
         const n   = points.length;
         const hw  = trackWidth / 2;
@@ -785,7 +821,7 @@ const Track = (() => {
             const ly = points[iStart].y + nm.y * (trackWidth * 0.5 + 16);
             ctx.setLineDash([]);
             ctx.fillStyle = 'rgba(60,210,255,0.85)';
-            ctx.font = 'bold 13px Arial';
+            ctx.font = 'bold 14px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('DRS', lx, ly);
@@ -795,6 +831,12 @@ const Track = (() => {
             _crossLine(ctx, Math.round(z.detect * n), trackWidth * 0.48, 'rgba(60,210,255,0.5)', 1.5, [3, 6]);
         }
         ctx.restore();
+    }
+
+    /** Rotation that keeps text the right way up whichever way the track runs. */
+    function _uprightAngle(idx) {
+        const a = angleAt(idx);
+        return Math.abs(a) > Math.PI / 2 ? a + Math.PI : a;
     }
 
     function _crossLine(ctx, idx, halfWidth, color, lw, dash) {
@@ -911,13 +953,18 @@ const Track = (() => {
             ctx.fillStyle = col.main;
             ctx.fillRect(-20, side > 0 ? y0 + bh - 9 : y0, 40, 9);
 
-            // Number painted on the floor of the bay.
+            ctx.restore();
+
+            // Number painted on the floor of the bay, kept upright.
+            ctx.save();
+            ctx.translate(p.x + nm.x * (fastOut + depth * 0.42), p.y + nm.y * (fastOut + depth * 0.42));
+            ctx.rotate(_uprightAngle(idx));
             ctx.globalAlpha = 0.55;
             ctx.fillStyle = '#111';
             ctx.font = 'bold 15px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(String(b + 1), 0, depth * 0.42);
+            ctx.fillText(String(b + 1), 0, 0);
             ctx.restore();
         }
 
@@ -927,7 +974,7 @@ const Track = (() => {
         const lang = angleAt(li);
         ctx.save();
         ctx.translate(points[li].x + lnm.x * _pit.fastOffset, points[li].y + lnm.y * _pit.fastOffset);
-        ctx.rotate(Math.abs(lang) > Math.PI / 2 ? lang + Math.PI : lang);
+        ctx.rotate(_uprightAngle(li));
         ctx.globalAlpha = 0.45;
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 12px Arial';
@@ -972,12 +1019,19 @@ const Track = (() => {
             ctx.beginPath();
             ctx.moveTo(-16, -14); ctx.lineTo(-22, -14); ctx.lineTo(-22, 14); ctx.lineTo(-16, 14);
             ctx.stroke();
-            ctx.globalAlpha = 0.32;
+            ctx.restore();
+
+            // Slot number, upright so it reads on either half of the circuit.
+            const tang = angleAt(idx);
+            ctx.save();
+            ctx.translate(p.x + nm.x * off - Math.cos(tang) * 33, p.y + nm.y * off - Math.sin(tang) * 33);
+            ctx.rotate(_uprightAngle(idx));
+            ctx.globalAlpha = 0.4;
             ctx.fillStyle = '#fff';
-            ctx.font = 'bold 11px Arial';
+            ctx.font = 'bold 12px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(String(i + 1), -33, 0);
+            ctx.fillText(String(i + 1), 0, 0);
             ctx.restore();
         }
         ctx.restore();
